@@ -27,6 +27,7 @@ from qt_help import ABOUT_HTML, APP_NAME, APP_VERSION, HelpDialog, asset_path
 from qt_overview import OverviewPage
 from qt_tank_attributes import TankAttributesPage
 from qt_tank_explorer import TankExplorerPage
+from qt_vitrification import VitrificationPage
 from qt_widgets import StatusLogger
 from qt_worker import run_in_thread
 
@@ -134,7 +135,7 @@ class EmberMainWindow(QMainWindow):
         self.stack.addWidget(self.heatmaps_page)
         self.correlations_page = CorrelationsPage(self)
         self.stack.addWidget(self.correlations_page)
-        self.vitrification_page = PlaceholderPage(NAV_VITRIFICATION)
+        self.vitrification_page = VitrificationPage(self)
         self.stack.addWidget(self.vitrification_page)
         self.debug_page = PlaceholderPage(NAV_DEBUG)
         self.stack.addWidget(self.debug_page)

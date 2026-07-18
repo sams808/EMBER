@@ -171,6 +171,32 @@ def size_confound_dataset():
 
 
 @pytest.fixture
+def oxide_dataset():
+    """3 tanks, kg-only: T1 has Na+Si (clean binary glass-former mix), T2
+    has Na+Si+Cl (Cl is a non-network element -> reported elemental) and
+    Pu (no PNNL-20184 basicity value -> must be excluded, not crash), T3
+    repeats T1's elements at different amounts (for the blend test)."""
+    rows = {"WasteSiteId": [], "Analyte": [], "WastePhase": [], "WasteType": [], "Inventory": [], "Units": []}
+    data = [
+        ("241-A-101", [("Na", 100.0), ("Si", 50.0)]),
+        ("241-A-102", [("Na", 40.0), ("Si", 20.0), ("Cl", 5.0), ("Pu", 0.001)]),
+        ("241-A-103", [("Na", 60.0), ("Si", 30.0)]),
+    ]
+    for tank, elements in data:
+        for analyte, val in elements:
+            rows["WasteSiteId"].append(tank)
+            rows["Analyte"].append(analyte)
+            rows["WastePhase"].append("Liquid")
+            rows["WasteType"].append("T1")
+            rows["Inventory"].append(val)
+            rows["Units"].append("kg")
+    dataset = HanfordDataset()
+    dataset.df = dataset._clean_dataframe(pl.DataFrame(rows))
+    dataset.report = None
+    return dataset
+
+
+@pytest.fixture
 def real_csv_paths():
     """(composition_path, attributes_path) for the real local dataset.
     Use with @requires_real_data."""
