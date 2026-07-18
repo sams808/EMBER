@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from elements import normalize_element_symbol
-from matrix_science import log10_safe
+from matrix_science import log10_safe, square_matrix_lookup
 
 try:
     import seaborn as sns
@@ -501,17 +501,7 @@ def _pair_palette_name(mode: str, color_mode: str = "Basic") -> Optional[str]:
 
 
 def _square_matrix_from_element_table(square_df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-    if square_df is None or square_df.empty or "Element" not in square_df.columns:
-        return pd.DataFrame(), []
-    data = square_df.copy().set_index("Element")
-    elements = [str(x) for x in data.index.tolist()]
-    keep = [e for e in elements if e in data.columns]
-    if not keep:
-        return pd.DataFrame(), []
-    data = data.loc[keep, keep]
-    for c in data.columns:
-        data[c] = pd.to_numeric(data[c], errors="coerce")
-    return data, keep
+    return square_matrix_lookup(square_df)
 
 
 def plot_seaborn_lower_triangle_matrix(
@@ -924,4 +914,155 @@ def plot_seaborn_stats_dashboard(panel, element_stats: pd.DataFrame, pair_stats:
         ax3.text(0.5, 0.5, "No pair stats", ha="center", va="center", transform=ax3.transAxes)
         ax4.text(0.5, 0.5, "No pair stats", ha="center", va="center", transform=ax4.transAxes)
     panel.ax = ax1
+    panel.canvas.draw_idle()
+
+
+# ---------------------------------------------------------------------------
+# Correlations "Structure" sub-tab (M8): PCA scatter, dendrogram, partial-
+# vs-raw correlation comparison, element-association network graph.
+# ---------------------------------------------------------------------------
+
+def plot_pca_scatter(panel, tank_summary: pd.DataFrame, color_by: Optional[str], pca_variance: pd.DataFrame, color_mode: str = "Basic") -> None:
+    if not _seaborn_available_or_message(panel):
+        return
+    _set_seaborn_theme(color_mode)
+    if tank_summary is None or tank_summary.empty or "PC1" not in tank_summary.columns or "PC2" not in tank_summary.columns:
+        panel.show_message("No PCA scores. Build the structure data first.")
+        return
+    pdf = tank_summary.copy()
+    var_map: Dict[str, float] = {}
+    if pca_variance is not None and not pca_variance.empty:
+        var_map = {str(r.PC): float(r.ExplainedVarianceRatio) for r in pca_variance.itertuples(index=False)}
+    xlabel = f"PC1 ({var_map.get('PC1', 0.0) * 100:.1f}%)" if var_map else "PC1"
+    ylabel = f"PC2 ({var_map.get('PC2', 0.0) * 100:.1f}%)" if var_map else "PC2"
+
+    panel.figure.clear()
+    ax = panel.figure.add_subplot(111)
+    hue_col = color_by if color_by and color_by in pdf.columns and pdf[color_by].notna().any() else None
+    if hue_col:
+        pdf[hue_col] = pdf[hue_col].astype(str).fillna("Unknown")
+        palette = "tab20" if pdf[hue_col].nunique() > 10 else ("crest" if _use_coherent_colors(color_mode) else "tab10")
+        sns.scatterplot(data=pdf, x="PC1", y="PC2", hue=hue_col, palette=palette, s=60, alpha=0.85, ax=ax)
+        ax.legend(title=hue_col, bbox_to_anchor=(1.02, 1.0), loc="upper left", fontsize=8)
+    else:
+        ax.scatter(pdf["PC1"], pdf["PC2"], s=60, alpha=0.85, color=_main_point_color(color_mode))
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title("Tank PCA (kg, standardized)" + (f" - colored by {color_by}" if hue_col else ""))
+    ax.grid(True, alpha=0.25)
+    panel.ax = ax
+    panel.canvas.draw_idle()
+
+
+def plot_dendrogram(panel, cluster_linkage, cluster_labels: Sequence[str], color_mode: str = "Basic") -> None:
+    if not _seaborn_available_or_message(panel):
+        return
+    _set_seaborn_theme(color_mode)
+    if cluster_linkage is None or len(cluster_linkage) == 0 or not cluster_labels:
+        panel.show_message("No clustering result. Build the structure data first.")
+        return
+    from scipy.cluster.hierarchy import dendrogram
+
+    n = len(cluster_labels)
+    panel.figure.clear()
+    base_size = min(max(6.5, n * 0.28), 19.0)
+    panel.figure.set_size_inches(base_size, 6.0, forward=True)
+    ax = panel.figure.add_subplot(111)
+    dendrogram(
+        cluster_linkage, labels=list(cluster_labels), ax=ax, leaf_rotation=90,
+        leaf_font_size=8 if n <= 55 else 6, color_threshold=0, above_threshold_color=_line_color(color_mode),
+    )
+    ax.set_title("Tank hierarchical clustering (kg, standardized)")
+    ax.set_ylabel("Distance")
+    ax.grid(True, axis="y", alpha=0.2)
+    panel.ax = ax
+    panel.canvas.draw_idle()
+
+
+def plot_partial_correlation_comparison(panel, partial_df: pd.DataFrame, raw_df: pd.DataFrame, annotate: bool = False, color_mode: str = "Basic") -> None:
+    """Raw and partial (controlling for tank size) correlation heatmaps
+    side by side, so the size of the "everything correlates because both
+    scale with tank size" effect is directly visible."""
+    if not _seaborn_available_or_message(panel):
+        return
+    _set_seaborn_theme(color_mode)
+    raw_data, raw_elements = _square_matrix_from_element_table(raw_df)
+    partial_data, _partial_elements = _square_matrix_from_element_table(partial_df)
+    if raw_data.empty or partial_data.empty:
+        panel.show_message("No partial-correlation matrix. Build the structure data first.")
+        return
+    n = len(raw_elements)
+    cmap = _corr_cmap(color_mode)
+    panel.figure.clear()
+    base_size = min(max(5.5, n * 0.32), 14.0)
+    panel.figure.set_size_inches(base_size * 2 + 1.2, base_size + 1.0, forward=True)
+    ax1 = panel.figure.add_subplot(1, 2, 1)
+    ax2 = panel.figure.add_subplot(1, 2, 2)
+    mask1 = np.triu(np.ones_like(raw_data.to_numpy(dtype=float), dtype=bool), k=1)
+    mask2 = np.triu(np.ones_like(partial_data.to_numpy(dtype=float), dtype=bool), k=1)
+    annot = bool(annotate and n <= 25)
+    sns.heatmap(raw_data, mask=mask1, vmin=-1, vmax=1, center=0, cmap=cmap, square=True,
+                linewidths=0.4 if n <= 45 else 0.0, linecolor="white", annot=annot, fmt=".2f",
+                cbar_kws={"label": "Correlation r", "shrink": 0.75}, ax=ax1)
+    sns.heatmap(partial_data, mask=mask2, vmin=-1, vmax=1, center=0, cmap=cmap, square=True,
+                linewidths=0.4 if n <= 45 else 0.0, linecolor="white", annot=annot, fmt=".2f",
+                cbar_kws={"label": "Partial correlation r", "shrink": 0.75}, ax=ax2)
+    ax1.set_title("Raw correlation")
+    ax2.set_title("Partial correlation\n(controlling for tank size)")
+    for ax in (ax1, ax2):
+        ax.set_xlabel("Element")
+        ax.set_ylabel("Element")
+        ax.tick_params(axis="x", rotation=90, labelsize=8 if n <= 55 else 6)
+        ax.tick_params(axis="y", rotation=0, labelsize=8 if n <= 55 else 6)
+    panel.ax = ax1
+    panel.canvas.draw_idle()
+
+
+def plot_element_network(panel, network_nodes: pd.DataFrame, network_edges: pd.DataFrame, color_mode: str = "Basic") -> None:
+    """Element-association network: node position/size come straight from
+    structure_science.element_network (a shared spring layout also used by
+    html_export's Plotly version, so the two views always agree). Every
+    selected element is drawn even with zero edges -- an isolated node at a
+    strict threshold is itself informative."""
+    if not _seaborn_available_or_message(panel):
+        return
+    _set_seaborn_theme(color_mode)
+    if network_nodes is None or network_nodes.empty:
+        panel.show_message("No network data. Build the structure data first.")
+        return
+    from matplotlib.lines import Line2D
+
+    panel.figure.clear()
+    ax = panel.figure.add_subplot(111)
+    pos = {str(r.Element): (float(r.x), float(r.y)) for r in network_nodes.itertuples(index=False)}
+    sizes = {str(r.Element): float(r.LogTotalInventory) for r in network_nodes.itertuples(index=False)}
+    max_size = max(sizes.values()) if sizes else 0.0
+    node_sizes = [200.0 + 1400.0 * (sizes[e] / max_size if max_size > 0 else 0.0) for e in pos]
+
+    positive_color = "#4C78A8" if _use_coherent_colors(color_mode) else "0.25"
+    negative_color = "#D55E00" if _use_coherent_colors(color_mode) else "0.55"
+    if network_edges is not None and not network_edges.empty:
+        for row in network_edges.itertuples(index=False):
+            x1, y1 = pos[row.Element_A]
+            x2, y2 = pos[row.Element_B]
+            width = 0.6 + 3.0 * float(row.AbsCorrelation)
+            color = positive_color if row.Sign == "positive" else negative_color
+            ax.plot([x1, x2], [y1, y2], color=color, linewidth=width, alpha=0.55, zorder=1)
+    xs = [pos[e][0] for e in pos]
+    ys = [pos[e][1] for e in pos]
+    ax.scatter(xs, ys, s=node_sizes, color=_main_point_color(color_mode), edgecolor="white", linewidth=0.8, zorder=2)
+    for e, (x, y) in pos.items():
+        ax.annotate(e, (x, y), textcoords="offset points", xytext=(0, 6), ha="center", fontsize=9, zorder=3)
+
+    legend_handles = []
+    if network_edges is not None and not network_edges.empty:
+        if (network_edges["Sign"] == "positive").any():
+            legend_handles.append(Line2D([0], [0], color=positive_color, lw=2, label="positive r"))
+        if (network_edges["Sign"] == "negative").any():
+            legend_handles.append(Line2D([0], [0], color=negative_color, lw=2, label="negative r"))
+    if legend_handles:
+        ax.legend(handles=legend_handles, loc="lower left", fontsize=8)
+    ax.set_title("Element association network (kg)")
+    ax.axis("off")
+    panel.ax = ax
     panel.canvas.draw_idle()

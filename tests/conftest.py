@@ -16,6 +16,7 @@ that happen after the patch is applied.
 """
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -83,6 +84,90 @@ def sample_dataset() -> HanfordDataset:
     dataset.df = dataset._merge_tank_attributes(df, attrs)
     dataset.report = None
     return dataset
+
+
+STRUCTURE_TANKS = [
+    "241-A-101", "241-A-102", "241-A-103", "241-A-104",
+    "241-AN-101", "241-AN-102", "241-AN-103", "241-AN-104",
+]
+GROUP_A_TANKS = STRUCTURE_TANKS[:4]
+GROUP_AN_TANKS = STRUCTURE_TANKS[4:]
+
+
+@pytest.fixture
+def structure_dataset():
+    """8 tanks in two clean, hand-separated groups (by Cs/Sr/Mo
+    composition) so PCA and hierarchical clustering have real structure to
+    recover, plus a constant Fe column (drop-constant-element handling)
+    and per-farm TankType/WastePhase so tank_categorical_labels /
+    color-by has something meaningful to group."""
+    cs_vals = [100.0, 110.0, 120.0, 130.0, 5.0, 6.0, 7.0, 8.0]
+    sr_vals = [v * 0.5 for v in cs_vals]      # exactly proportional to Cs -> r=1.0
+    mo_vals = [138.0 - v for v in cs_vals]    # exact affine, negative slope -> r=-1.0
+    fe_vals = [10.0] * 8                       # constant -> must be dropped, not crash
+    phases = ["Sludge Solid"] * 4 + ["Supernatant"] * 4
+
+    rows = {"WasteSiteId": [], "Analyte": [], "WastePhase": [], "WasteType": [], "Inventory": [], "Units": []}
+    for tank, cs_v, sr_v, mo_v, fe_v, phase in zip(STRUCTURE_TANKS, cs_vals, sr_vals, mo_vals, fe_vals, phases):
+        for analyte, val in [("Cs", cs_v), ("Sr", sr_v), ("Mo", mo_v), ("Fe", fe_v)]:
+            rows["WasteSiteId"].append(tank)
+            rows["Analyte"].append(analyte)
+            rows["WastePhase"].append(phase)
+            rows["WasteType"].append("T1")
+            rows["Inventory"].append(val)
+            rows["Units"].append("kg")
+
+    attrs_rows = pl.DataFrame({
+        "Name": STRUCTURE_TANKS,
+        "TankType": ["DST"] * 4 + ["SST-4"] * 4,
+        "TankStatus": ["Active"] * 4 + ["Interim Closure"] * 4,
+        "TankIntegrity": ["Sound"] * 8,
+        "Capacity": ["1000"] * 8,
+        "DIL_Gal": ["0"] * 8,
+    })
+
+    dataset = HanfordDataset()
+    df = dataset._clean_dataframe(pl.DataFrame(rows))
+    attrs = dataset._clean_attributes_dataframe(attrs_rows)
+    dataset.attrs_df = attrs
+    dataset.df = dataset._merge_tank_attributes(df, attrs)
+    dataset.report = None
+    return dataset
+
+
+@pytest.fixture
+def size_confound_dataset():
+    """12 tanks where Cs and Ba are both driven mostly by a shared "tank
+    size" element (Na) plus independent per-tank noise -- exercises
+    control_for_total_inventory / partial correlation (correlation_science,
+    structure_science): raw corr(Cs, Ba) is strongly positive because both
+    scale with tank size, but that mostly disappears once you control for
+    each tank's total kg inventory. Built with a fixed numpy Generator seed
+    so it's exactly reproducible; expected raw/partial r values are
+    computed independently in each test via plain pandas .corr() calls on
+    these same arrays, not by calling the functions under test."""
+    rng = np.random.default_rng(0)
+    n = 12
+    driver = np.linspace(200, 260, n)
+    cs = 0.5 * driver + rng.normal(0, 6, n)
+    ba = 0.2 * driver + rng.normal(0, 6, n)
+    other = 50 + rng.normal(0, 3, n)
+    tanks = [f"241-A-{100 + i}" for i in range(n)]
+
+    rows = {"WasteSiteId": [], "Analyte": [], "WastePhase": [], "WasteType": [], "Inventory": [], "Units": []}
+    for tank, na_v, cs_v, ba_v, other_v in zip(tanks, driver, cs, ba, other):
+        for analyte, val in [("Na", na_v), ("Cs", cs_v), ("Ba", ba_v), ("Zr", other_v)]:
+            rows["WasteSiteId"].append(tank)
+            rows["Analyte"].append(analyte)
+            rows["WastePhase"].append("Sludge Solid")
+            rows["WasteType"].append("T1")
+            rows["Inventory"].append(float(val))
+            rows["Units"].append("kg")
+
+    dataset = HanfordDataset()
+    dataset.df = dataset._clean_dataframe(pl.DataFrame(rows))
+    dataset.report = None
+    return dataset, {"driver": driver, "Cs": cs, "Ba": ba, "other": other, "tanks": tanks}
 
 
 @pytest.fixture

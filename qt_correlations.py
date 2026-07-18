@@ -1,9 +1,9 @@
 """
 qt_correlations.py — Correlations workspace: a nav-shell QTabWidget hosting
 three sub-tabs (mirrors Dataapp's precedent of one nav row + many internal
-tabs for a complex domain). "Quick Scan" is built this milestone, porting
-the old app's CorrelationTab; "Association Workbench (kg)" and "Structure"
-land in later milestones.
+tabs for a complex domain): "Quick Scan" (ported from the old app's
+CorrelationTab), "Association Workbench (kg)", and "Structure" (PCA/
+clustering/partial correlation/network graph -- entirely new capability).
 """
 from __future__ import annotations
 
@@ -20,23 +20,13 @@ import correlation_science as csci
 import export_utils
 import plot_helpers as ph
 from data_model import HanfordDataset
+from qt_correlations_structure import StructureTab
 from qt_correlations_workbench import WorkbenchTab
 from qt_widgets import DataFrameTableView, PlotWidget
 
 METRICS = ["log10_plus1", "log10_inventory", "fraction", "inventory", "presence"]
 METHODS = ["pearson", "spearman"]
 HEATMAP_STYLES = ["Matplotlib lower triangle", "Seaborn lower triangle", "Seaborn + total projections"]
-
-
-class _ComingSoonTab(QWidget):
-    def __init__(self, name: str, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        from PySide6.QtCore import Qt
-        layout.setAlignment(Qt.AlignCenter)
-        label = QLabel(f"{name} — coming in a later milestone.")
-        label.setObjectName("SectionNote")
-        layout.addWidget(label)
 
 
 class QuickScanTab(QWidget):
@@ -82,6 +72,12 @@ class QuickScanTab(QWidget):
         self.min_inv_spin.setRange(0.0, 1e12)
         self.min_inv_spin.setDecimals(6)
         row1.addWidget(self.min_inv_spin)
+        self.control_for_size_check = QCheckBox("control for tank size (partial r)")
+        self.control_for_size_check.setToolTip(
+            "Strip out the \"everything correlates because both elements scale with tank size\" "
+            "effect by computing partial correlation controlling for each tank's total inventory."
+        )
+        row1.addWidget(self.control_for_size_check)
         row1.addStretch(1)
         export_btn = QPushButton("Export")
         export_btn.clicked.connect(self._export_tables)
@@ -179,6 +175,7 @@ class QuickScanTab(QWidget):
                 value_mode=self.metric_combo.currentText(), method=self.method_combo.currentText(),
                 top_n_elements=self.scan_top_spin.value(), min_overlap=self.min_overlap_spin.value(),
                 min_inventory=self.min_inv_spin.value(), include_zeros=self.include_zeros_check.isChecked(),
+                control_for_total_inventory=self.control_for_size_check.isChecked(),
             )
         except ValueError as exc:
             QMessageBox.warning(self, "Correlation scan failed", str(exc))
@@ -198,6 +195,7 @@ class QuickScanTab(QWidget):
                 self.dataset, elements, unit=self.unit_combo.currentText(),
                 value_mode=self.metric_combo.currentText(), method=self.method_combo.currentText(),
                 min_inventory=self.min_inv_spin.value(), include_zeros=self.include_zeros_check.isChecked(),
+                control_for_total_inventory=self.control_for_size_check.isChecked(),
             )
         except ValueError as exc:
             QMessageBox.warning(self, "Dual/triple correlation failed", str(exc))
@@ -271,9 +269,10 @@ class CorrelationsPage(QWidget):
         self.tabs.addTab(self.quick_scan_tab, "Quick Scan")
         self.workbench_tab = WorkbenchTab(app_window)
         self.tabs.addTab(self.workbench_tab, "Association Workbench (kg)")
-        self.structure_tab = _ComingSoonTab("Structure")
+        self.structure_tab = StructureTab(app_window)
         self.tabs.addTab(self.structure_tab, "Structure")
 
     def on_dataset_changed(self, dataset: HanfordDataset) -> None:
         self.quick_scan_tab.on_dataset_changed(dataset)
         self.workbench_tab.on_dataset_changed(dataset)
+        self.structure_tab.on_dataset_changed(dataset)

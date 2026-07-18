@@ -78,6 +78,54 @@ def workbench_results():
     }
 
 
+@pytest.fixture
+def structure_results():
+    from scipy.cluster.hierarchy import linkage
+
+    elements = ["Cs", "Sr", "Fe", "Na"]
+    tanks = [f"241-T-{i:03d}" for i in range(6)]
+
+    tank_summary = pd.DataFrame({
+        "WasteSiteId": tanks, "PC1": [1.2, 1.5, 1.8, -0.9, -1.3, -1.6],
+        "PC2": [0.3, -0.2, 0.1, 0.4, -0.1, 0.2], "Cluster": [1, 1, 1, 2, 2, 2],
+        "TankFarm": ["A", "A", "A", "AN", "AN", "AN"],
+        "TankType": ["DST", "DST", "DST", "SST-4", "SST-4", "SST-4"],
+        "TankStatus": ["Active"] * 6,
+        "Dominant waste phase": ["Sludge Solid"] * 3 + ["Supernatant"] * 3,
+    })
+    pca_variance = pd.DataFrame({
+        "PC": ["PC1", "PC2"], "ExplainedVarianceRatio": [0.85, 0.10], "CumulativeVarianceRatio": [0.85, 0.95],
+    })
+
+    rng = np.random.default_rng(0)
+    cluster_linkage = linkage(rng.uniform(0, 1, size=(6, 3)), method="ward")
+    cluster_labels = tanks
+
+    raw_square = pd.DataFrame(np.eye(4), index=elements, columns=elements)
+    raw_square.loc["Cs", "Sr"] = raw_square.loc["Sr", "Cs"] = 0.9
+    raw_corr_matrix = raw_square.reset_index().rename(columns={"index": "Element"})
+    partial_square = pd.DataFrame(np.eye(4), index=elements, columns=elements)
+    partial_square.loc["Cs", "Sr"] = partial_square.loc["Sr", "Cs"] = 0.2
+    partial_corr_matrix = partial_square.reset_index().rename(columns={"index": "Element"})
+
+    network_nodes = pd.DataFrame({
+        "Element": elements, "Total_inventory_kg": [500.0, 300.0, 60.0, 20.0],
+        "LogTotalInventory": [2.7, 2.5, 1.8, 1.3], "x": [0.1, 0.4, -0.2, -0.5], "y": [0.2, -0.3, 0.5, -0.1],
+        "N_edges": [2, 1, 0, 1],
+    })
+    network_edges = pd.DataFrame([
+        {"Element_A": "Cs", "Element_B": "Sr", "Correlation_r": 0.9, "AbsCorrelation": 0.9, "Jaccard_presence": 0.8, "Sign": "positive"},
+        {"Element_A": "Cs", "Element_B": "Na", "Correlation_r": -0.4, "AbsCorrelation": 0.4, "Jaccard_presence": 0.3, "Sign": "negative"},
+    ])
+
+    return {
+        "tank_summary": tank_summary, "pca_variance": pca_variance,
+        "cluster_linkage": cluster_linkage, "cluster_labels": cluster_labels,
+        "raw_corr_matrix": raw_corr_matrix, "partial_corr_matrix": partial_corr_matrix,
+        "network_nodes": network_nodes, "network_edges": network_edges,
+    }
+
+
 ALL_SEABORN_PLOT_CALLS = [
     lambda p, w: ph.plot_seaborn_lower_triangle_matrix(p, w["corr_matrix"], "t", "Correlation r"),
     lambda p, w: ph.plot_seaborn_top_associations(p, w["pair_stats"]),
@@ -95,6 +143,22 @@ class TestAllPlotsRespectSeabornUnavailable:
     def test_shows_message_and_does_not_crash(self, panel, workbench_results, monkeypatch, plot_call):
         monkeypatch.setattr(ph, "sns", None)
         plot_call(panel, workbench_results)
+        assert "not installed" in panel.ax.texts[-1].get_text()
+
+
+ALL_STRUCTURE_PLOT_CALLS = [
+    lambda p, s: ph.plot_pca_scatter(p, s["tank_summary"], "TankFarm", s["pca_variance"]),
+    lambda p, s: ph.plot_dendrogram(p, s["cluster_linkage"], s["cluster_labels"]),
+    lambda p, s: ph.plot_partial_correlation_comparison(p, s["partial_corr_matrix"], s["raw_corr_matrix"]),
+    lambda p, s: ph.plot_element_network(p, s["network_nodes"], s["network_edges"]),
+]
+
+
+class TestAllStructurePlotsRespectSeabornUnavailable:
+    @pytest.mark.parametrize("plot_call", ALL_STRUCTURE_PLOT_CALLS)
+    def test_shows_message_and_does_not_crash(self, panel, structure_results, monkeypatch, plot_call):
+        monkeypatch.setattr(ph, "sns", None)
+        plot_call(panel, structure_results)
         assert "not installed" in panel.ax.texts[-1].get_text()
 
 
@@ -339,4 +403,103 @@ class TestPlotSeabornStatsDashboard:
 
     def test_coherent_colors_mode(self, panel, workbench_results, qtbot):
         ph.plot_seaborn_stats_dashboard(panel, workbench_results["element_stats"], workbench_results["pair_stats"], color_mode="Coherent colors")
+        qtbot.wait(20)
+
+
+class TestPlotPcaScatter:
+    def test_empty_tank_summary_shows_message(self, panel):
+        ph.plot_pca_scatter(panel, pd.DataFrame(), "TankFarm", pd.DataFrame())
+
+    def test_missing_pc_columns_shows_message(self, panel):
+        ph.plot_pca_scatter(panel, pd.DataFrame({"WasteSiteId": ["T1"]}), "TankFarm", pd.DataFrame())
+
+    def test_renders_with_color_by(self, panel, structure_results, qtbot):
+        ph.plot_pca_scatter(panel, structure_results["tank_summary"], "TankFarm", structure_results["pca_variance"])
+        qtbot.wait(20)
+        assert "PC1" in panel.ax.get_xlabel()
+
+    def test_renders_without_color_by(self, panel, structure_results, qtbot):
+        ph.plot_pca_scatter(panel, structure_results["tank_summary"], None, structure_results["pca_variance"])
+        qtbot.wait(20)
+
+    def test_color_by_column_missing_falls_back_to_plain_scatter(self, panel, structure_results, qtbot):
+        ph.plot_pca_scatter(panel, structure_results["tank_summary"], "NotAColumn", structure_results["pca_variance"])
+        qtbot.wait(20)
+
+    def test_color_by_all_null_falls_back_to_plain_scatter(self, panel, structure_results, qtbot):
+        summary = structure_results["tank_summary"].copy()
+        summary["TankFarm"] = None
+        ph.plot_pca_scatter(panel, summary, "TankFarm", structure_results["pca_variance"])
+        qtbot.wait(20)
+
+    def test_many_categories_uses_tab20_palette(self, panel, structure_results, qtbot):
+        summary = structure_results["tank_summary"].copy()
+        summary["ManyCats"] = [f"Cat{i}" for i in range(len(summary))]
+        ph.plot_pca_scatter(panel, summary, "ManyCats", structure_results["pca_variance"])
+        qtbot.wait(20)
+
+    def test_no_variance_table_still_renders(self, panel, structure_results, qtbot):
+        ph.plot_pca_scatter(panel, structure_results["tank_summary"], "TankFarm", pd.DataFrame())
+        qtbot.wait(20)
+        assert panel.ax.get_xlabel() == "PC1"
+
+    def test_coherent_colors_mode(self, panel, structure_results, qtbot):
+        ph.plot_pca_scatter(panel, structure_results["tank_summary"], "TankFarm", structure_results["pca_variance"], color_mode="Coherent colors")
+        qtbot.wait(20)
+
+
+class TestPlotDendrogram:
+    def test_empty_linkage_shows_message(self, panel):
+        ph.plot_dendrogram(panel, np.empty((0, 4)), [])
+
+    def test_none_linkage_shows_message(self, panel):
+        ph.plot_dendrogram(panel, None, [])
+
+    def test_renders_with_valid_linkage(self, panel, structure_results, qtbot):
+        ph.plot_dendrogram(panel, structure_results["cluster_linkage"], structure_results["cluster_labels"])
+        qtbot.wait(20)
+        assert "clustering" in panel.ax.get_title().lower()
+
+    def test_coherent_colors_mode(self, panel, structure_results, qtbot):
+        ph.plot_dendrogram(panel, structure_results["cluster_linkage"], structure_results["cluster_labels"], color_mode="Coherent colors")
+        qtbot.wait(20)
+
+
+class TestPlotPartialCorrelationComparison:
+    def test_empty_matrices_show_message(self, panel):
+        ph.plot_partial_correlation_comparison(panel, pd.DataFrame(), pd.DataFrame())
+
+    def test_renders_side_by_side(self, panel, structure_results, qtbot):
+        ph.plot_partial_correlation_comparison(panel, structure_results["partial_corr_matrix"], structure_results["raw_corr_matrix"])
+        qtbot.wait(20)
+        assert panel.ax.get_title() == "Raw correlation"
+
+    def test_annotated(self, panel, structure_results, qtbot):
+        ph.plot_partial_correlation_comparison(panel, structure_results["partial_corr_matrix"], structure_results["raw_corr_matrix"], annotate=True)
+        qtbot.wait(20)
+
+    def test_coherent_colors_mode(self, panel, structure_results, qtbot):
+        ph.plot_partial_correlation_comparison(panel, structure_results["partial_corr_matrix"], structure_results["raw_corr_matrix"], color_mode="Coherent colors")
+        qtbot.wait(20)
+
+
+class TestPlotElementNetwork:
+    def test_empty_nodes_shows_message(self, panel):
+        ph.plot_element_network(panel, pd.DataFrame(), pd.DataFrame())
+
+    def test_renders_with_edges(self, panel, structure_results, qtbot):
+        ph.plot_element_network(panel, structure_results["network_nodes"], structure_results["network_edges"])
+        qtbot.wait(20)
+        assert panel.ax.get_title() == "Element association network (kg)"
+
+    def test_renders_with_no_edges_isolated_nodes_only(self, panel, structure_results, qtbot):
+        ph.plot_element_network(panel, structure_results["network_nodes"], pd.DataFrame())
+        qtbot.wait(20)
+
+    def test_none_edges_treated_as_no_edges(self, panel, structure_results, qtbot):
+        ph.plot_element_network(panel, structure_results["network_nodes"], None)
+        qtbot.wait(20)
+
+    def test_coherent_colors_mode(self, panel, structure_results, qtbot):
+        ph.plot_element_network(panel, structure_results["network_nodes"], structure_results["network_edges"], color_mode="Coherent colors")
         qtbot.wait(20)

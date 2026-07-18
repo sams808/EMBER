@@ -8,6 +8,7 @@ not crash).
 """
 import math
 
+import pandas as pd
 import polars as pl
 import pytest
 
@@ -56,6 +57,107 @@ class TestElementTotalsByUnit:
 
     def test_empty_for_missing_unit(self, corr_dataset):
         assert cs.element_totals_by_unit(corr_dataset, "Ci") == {}
+
+
+class TestTankTotalInventory:
+    def test_sums_across_all_elements_not_just_a_subset(self, corr_dataset):
+        # Tank 241-T-101: Cs=10, Sr=20, Mo=50 (138-10), Fe=5, Ba=7 -> 92.
+        totals = cs.tank_total_inventory(corr_dataset, "kg", log_transform=False)
+        assert totals["241-T-101"] == pytest.approx(92.0)
+
+    def test_log_transform_applies_log10_plus1(self, corr_dataset):
+        totals_raw = cs.tank_total_inventory(corr_dataset, "kg", log_transform=False)
+        totals_log = cs.tank_total_inventory(corr_dataset, "kg", log_transform=True)
+        assert totals_log["241-T-101"] == pytest.approx(math.log10(totals_raw["241-T-101"] + 1.0))
+
+    def test_missing_unit_gives_zero_for_every_tank(self, corr_dataset):
+        totals = cs.tank_total_inventory(corr_dataset, "Ci", log_transform=False)
+        assert (totals == 0.0).all()
+        assert set(totals.index) == set(corr_dataset.available_tanks())
+
+
+class TestPartialCorrelationValue:
+    def test_matches_hand_computed_closed_form(self):
+        # (0.6 - 0.8*0.5) / sqrt((1-0.64)*(1-0.25)) = 0.2 / sqrt(0.27)
+        expected = 0.2 / math.sqrt(0.27)
+        assert cs.partial_correlation_value(0.6, 0.8, 0.5) == pytest.approx(expected)
+
+    def test_any_nan_input_propagates_to_nan(self):
+        assert math.isnan(cs.partial_correlation_value(float("nan"), 0.8, 0.5))
+        assert math.isnan(cs.partial_correlation_value(0.6, float("nan"), 0.5))
+        assert math.isnan(cs.partial_correlation_value(0.6, 0.8, float("nan")))
+
+    def test_zero_denominator_returns_nan_not_crash(self):
+        # r_xz = 1.0 -> (1 - r_xz^2) = 0 -> denominator is exactly zero.
+        assert math.isnan(cs.partial_correlation_value(0.5, 1.0, 0.5))
+
+
+class TestControlledCorrelationHelper:
+    def test_too_few_combined_rows_falls_back_to_raw(self):
+        pair = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [2.0, 4.0, 6.0]}, index=["T1", "T2", "T3"])
+        z_full = pd.Series([1.0, 2.0, 3.0], index=["T1", "T2", "T3"])  # combined has 3 rows, < 4 needed
+        raw_r, active_r = cs._controlled_correlation(pair, "a", "b", z_full, "pearson")
+        assert raw_r == pytest.approx(1.0)
+        assert active_r == pytest.approx(1.0)
+
+    def test_zero_denominator_partial_falls_back_to_raw(self):
+        # z equals "a" exactly -> r_az = 1.0 -> partial_correlation_value's
+        # denominator is zero -> NaN -> must fall back to raw_r, not NaN out.
+        pair = pd.DataFrame({"a": [1.0, 2.0, 3.0, 4.0], "b": [4.0, 3.0, 2.0, 1.0]}, index=["T1", "T2", "T3", "T4"])
+        z_full = pd.Series([1.0, 2.0, 3.0, 4.0], index=["T1", "T2", "T3", "T4"])
+        raw_r, active_r = cs._controlled_correlation(pair, "a", "b", z_full, "pearson")
+        assert raw_r == pytest.approx(-1.0)
+        assert active_r == pytest.approx(-1.0)
+
+
+class TestControlForTotalInventory:
+    def test_scan_reports_raw_and_controlled_columns(self, corr_dataset):
+        out, _ = cs.element_correlation_scan(
+            corr_dataset, "Cs", value_mode="inventory", min_overlap=3, control_for_total_inventory=True,
+        )
+        assert (out["ControlledForTotalInventory"]).all()
+        assert "Raw_Correlation_r" in out.columns
+
+    def test_scan_off_by_default_has_no_controlled_columns_populated_differently(self, corr_dataset):
+        out, _ = cs.element_correlation_scan(corr_dataset, "Cs", value_mode="inventory", min_overlap=3)
+        assert not out["ControlledForTotalInventory"].any()
+        # Off: raw and active correlation must be identical (no controlling happened).
+        assert (out["Correlation_r"] == out["Raw_Correlation_r"]).all()
+
+    def test_perfect_affine_relationship_stays_perfect_under_control(self, corr_dataset):
+        # Sr is an exact affine function of Cs -- controlling for a third
+        # variable can't change a deterministic relationship (zero residual
+        # variance left to explain away).
+        out, _ = cs.element_correlation_scan(
+            corr_dataset, "Cs", value_mode="inventory", min_overlap=3, control_for_total_inventory=True,
+        )
+        sr_row = out[out["PartnerElement"] == "Sr"].iloc[0]
+        assert sr_row["Correlation_r"] == pytest.approx(1.0)
+        assert sr_row["Raw_Correlation_r"] == pytest.approx(1.0)
+
+    def test_scan_strips_out_shared_size_confound(self, size_confound_dataset):
+        dataset, arrays = size_confound_dataset
+        out, _ = cs.element_correlation_scan(
+            dataset, "Cs", value_mode="inventory", top_n_elements=10, min_overlap=3,
+            control_for_total_inventory=True,
+        )
+        ba_row = out[out["PartnerElement"] == "Ba"].iloc[0]
+        assert abs(ba_row["Raw_Correlation_r"]) > abs(ba_row["Correlation_r"]) + 0.3
+        assert ba_row["ControlledForTotalInventory"]
+
+    def test_selected_correlations_strips_out_shared_size_confound(self, size_confound_dataset):
+        dataset, arrays = size_confound_dataset
+        pairs, _, _ = cs.selected_element_correlations(
+            dataset, ["Cs", "Ba"], value_mode="inventory", control_for_total_inventory=True,
+        )
+        row = pairs.set_index(["Element_A", "Element_B"]).loc[("Cs", "Ba")]
+        assert abs(row["Raw_Correlation_r"]) > abs(row["Correlation_r"]) + 0.3
+
+    def test_selected_correlations_off_by_default(self, corr_dataset):
+        pairs, _, _ = cs.selected_element_correlations(corr_dataset, ["Cs", "Sr"], value_mode="inventory")
+        row = pairs.set_index(["Element_A", "Element_B"]).loc[("Cs", "Sr")]
+        assert not row["ControlledForTotalInventory"]
+        assert row["Correlation_r"] == pytest.approx(row["Raw_Correlation_r"])
 
 
 class TestElementCorrelationScan:

@@ -74,6 +74,23 @@ class TestQuickScanTab:
         assert not tab._heatmap_projection_df.empty
         assert f"Total_inventory_kg" in tab._heatmap_projection_df.columns
 
+    def test_control_for_tank_size_checkbox_runs_without_crash(self, qtbot, sample_dataset):
+        tab = _make_quick_scan(qtbot)
+        tab.on_dataset_changed(sample_dataset)
+        tab.control_for_size_check.setChecked(True)
+        tab.target_edit.setText("Fe")
+        tab.min_overlap_spin.setValue(0)
+        tab.run_target_scan()
+        qtbot.wait(20)
+        scan = tab._table_views["Target scan"].dataframe()
+        if not scan.empty:
+            assert scan["ControlledForTotalInventory"].all()
+        tab.elements_edit.setText("Fe, Cd")
+        tab.run_selected()
+        qtbot.wait(20)
+        pairs = tab._table_views["Pairs"].dataframe()
+        assert pairs.iloc[0]["ControlledForTotalInventory"]
+
     def test_export_without_results_shows_message_not_crash(self, qtbot):
         tab = _make_quick_scan(qtbot)
         tab._export_tables()
@@ -106,3 +123,11 @@ class TestCorrelationsPage:
         qtbot.addWidget(page)
         page.on_dataset_changed(sample_dataset)
         assert page.quick_scan_tab.dataset is sample_dataset
+
+    def test_on_dataset_changed_forwards_to_structure_tab(self, qtbot, sample_dataset):
+        app_window = QMainWindow()
+        qtbot.addWidget(app_window)
+        page = CorrelationsPage(app_window)
+        qtbot.addWidget(page)
+        page.on_dataset_changed(sample_dataset)
+        assert page.structure_tab.dataset is sample_dataset

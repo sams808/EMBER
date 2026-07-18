@@ -29,10 +29,71 @@ def element_totals_by_unit(dataset: HanfordDataset, unit: str = "kg") -> Dict[st
     return {str(r.Element): float(r.Total) for r in pdf.itertuples(index=False)}
 
 
+def tank_total_inventory(dataset: HanfordDataset, unit: str = "kg", log_transform: bool = True) -> pd.Series:
+    """Per-tank total inventory in `unit`, summed across ALL elements (not
+    just a selected subset) -- the "how big is this tank overall" variable
+    used to control for the "everything correlates because both elements
+    just scale with tank size" effect. log_transform applies log10(total+1),
+    matching the log10_plus1 convention used elsewhere so a few huge tanks
+    don't dominate the control variable's own scale."""
+    df = dataset.require_df().filter((pl.col("Units") == unit) & pl.col("Element").is_not_null())
+    all_tanks = dataset.available_tanks()
+    if df.is_empty():
+        totals = pd.Series(0.0, index=all_tanks)
+    else:
+        totals = (
+            df.group_by("WasteSiteId").agg(pl.col("Inventory").sum().alias("Total"))
+            .to_pandas().set_index("WasteSiteId")["Total"]
+        )
+        totals = totals.reindex(all_tanks, fill_value=0.0)
+    if log_transform:
+        totals = np.log10(totals.astype(float) + 1.0)
+    totals.name = "TotalInventory"
+    return totals
+
+
+def partial_correlation_value(r_xy: float, r_xz: float, r_yz: float) -> float:
+    """First-order partial correlation of X,Y controlling for Z, from the
+    three pairwise correlations (closed form; exact for Pearson, a
+    standard and widely used approximation for Spearman/Kendall computed
+    the same way on their own pairwise coefficients):
+        r_XY.Z = (r_XY - r_XZ*r_YZ) / sqrt((1 - r_XZ^2)(1 - r_YZ^2))
+    """
+    if pd.isna(r_xy) or pd.isna(r_xz) or pd.isna(r_yz):
+        return float("nan")
+    denom = math.sqrt(max((1.0 - r_xz ** 2) * (1.0 - r_yz ** 2), 0.0))
+    if denom == 0.0:
+        return float("nan")
+    return float((r_xy - r_xz * r_yz) / denom)
+
+
+def _controlled_correlation(
+    pair: pd.DataFrame, col_a: str, col_b: str, z_full: Optional[pd.Series], method: str,
+) -> Tuple[float, float]:
+    """(raw_r, active_r) for a two-column `pair` (already overlap-masked
+    and NaN-dropped). active_r is the partial correlation controlling for
+    z_full when given and enough aligned, finite rows remain (>=4, the
+    minimum for one degree of freedom after controlling a third variable);
+    otherwise active_r falls back to raw_r unchanged."""
+    raw_r = pair[col_a].corr(pair[col_b], method=method) if len(pair) >= 3 else float("nan")
+    if z_full is None or pd.isna(raw_r):
+        return raw_r, raw_r
+    combined = pair.assign(_z=z_full.reindex(pair.index)).replace([np.inf, -np.inf], np.nan).dropna()
+    if len(combined) < 4:
+        return raw_r, raw_r
+    r_az = combined[col_a].corr(combined["_z"], method=method)
+    r_bz = combined[col_b].corr(combined["_z"], method=method)
+    partial = partial_correlation_value(raw_r, r_az, r_bz)
+    if pd.isna(partial):
+        return raw_r, raw_r
+    return raw_r, partial
+
+
 def element_correlation_scan(
     dataset: HanfordDataset, target_element: str, unit: str = "kg",
     value_mode: str = "log10_plus1", method: str = "pearson", top_n_elements: int = 80,
     min_overlap: int = 5, min_inventory: float = 0.0, include_zeros: bool = True,
+    control_for_total_inventory: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Rank every other element by |correlation| with the target, across
     the top-N elements by inventory (the target is always kept even if it
@@ -75,6 +136,7 @@ def element_correlation_scan(
     rows = []
     totals = element_totals_by_unit(dataset, unit)
     target_total = totals.get(target, 0.0)
+    z_full = tank_total_inventory(dataset, unit=unit, log_transform=True) if control_for_total_inventory else None
     for partner in values.columns:
         if partner == target:
             continue
@@ -94,14 +156,16 @@ def element_correlation_scan(
         pair = pair.replace([np.inf, -np.inf], np.nan).dropna()
         if len(pair) < max(int(min_overlap), 3):
             continue
-        r = pair["target"].corr(pair["partner"], method=method)
+        raw_r, r = _controlled_correlation(pair, "target", "partner", z_full, method)
         if pd.isna(r):
             continue
         partner_total = totals.get(partner, 0.0)
         rows.append({
             "TargetElement": target, "PartnerElement": partner, "Units": unit,
             "Metric": value_mode, "Method": method, "Correlation_r": float(r),
-            "AbsCorrelation": abs(float(r)), "N_tanks_used_for_corr": int(len(pair)),
+            "AbsCorrelation": abs(float(r)), "Raw_Correlation_r": float(raw_r) if pd.notna(raw_r) else np.nan,
+            "ControlledForTotalInventory": bool(control_for_total_inventory),
+            "N_tanks_used_for_corr": int(len(pair)),
             "N_overlap_nonzero_tanks": n_overlap, "N_target_present_tanks": n_target_present,
             "N_partner_present_tanks": n_partner_present, "Target_total_inventory": float(target_total),
             "Partner_total_inventory": float(partner_total),
@@ -133,6 +197,7 @@ def selected_element_correlations(
     dataset: HanfordDataset, elements: Sequence[str], unit: str = "kg",
     value_mode: str = "log10_plus1", method: str = "pearson",
     min_inventory: float = 0.0, include_zeros: bool = True,
+    control_for_total_inventory: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """All pairwise correlations among 2-3 selected elements, plus a joint
     co-occurrence summary row."""
@@ -156,6 +221,7 @@ def selected_element_correlations(
     else:
         raw_vals = vals.copy()
 
+    z_full = tank_total_inventory(dataset, unit=unit, log_transform=True) if control_for_total_inventory else None
     rows = []
     for a, b in combinations(clean, 2):
         if a not in vals.columns or b not in vals.columns:
@@ -165,10 +231,11 @@ def selected_element_correlations(
         if not include_zeros:
             pair = pair.loc[overlap]
         pair = pair.replace([np.inf, -np.inf], np.nan).dropna()
-        r = pair[a].corr(pair[b], method=method) if len(pair) >= 3 else np.nan
+        raw_r, r = _controlled_correlation(pair, a, b, z_full, method)
         rows.append({
             "Element_A": a, "Element_B": b, "Units": unit, "Metric": value_mode, "Method": method,
             "Correlation_r": r, "AbsCorrelation": abs(r) if pd.notna(r) else np.nan,
+            "Raw_Correlation_r": raw_r, "ControlledForTotalInventory": bool(control_for_total_inventory),
             "N_tanks_used_for_corr": int(len(pair)), "N_overlap_nonzero_tanks": int(overlap.sum()),
         })
     pair_table = pd.DataFrame(rows).sort_values("AbsCorrelation", ascending=False) if rows else pd.DataFrame()

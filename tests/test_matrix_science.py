@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+import pandas as pd
 import pytest
 
 import matrix_science as ms
@@ -16,6 +17,32 @@ class TestLog10Safe:
         assert math.isnan(out[0])
         assert math.isnan(out[1])
         assert out[2] == pytest.approx(1.0)
+
+
+class TestSquareMatrixLookup:
+    """Shared by plot_helpers (heatmap plotting) and structure_science
+    (network graph edges) -- reshapes an "Element" + one-column-per-element
+    square DataFrame into an Element-indexed square matrix."""
+
+    def test_empty_input_returns_empty(self):
+        data, keep = ms.square_matrix_lookup(pd.DataFrame())
+        assert data.empty and keep == []
+
+    def test_missing_element_column_returns_empty(self):
+        data, keep = ms.square_matrix_lookup(pd.DataFrame({"A": [1.0], "B": [2.0]}))
+        assert data.empty and keep == []
+
+    def test_no_overlapping_index_and_columns_returns_empty(self):
+        # "Element" rows name Cs/Sr, but no Cs/Sr *columns* exist -- keep ends up empty.
+        square_df = pd.DataFrame({"Element": ["Cs", "Sr"], "Ba": [1.0, 2.0], "Mo": [3.0, 4.0]})
+        data, keep = ms.square_matrix_lookup(square_df)
+        assert data.empty and keep == []
+
+    def test_valid_square_matrix(self):
+        square_df = pd.DataFrame({"Element": ["Cs", "Sr"], "Cs": [1.0, 0.5], "Sr": [0.5, 1.0]})
+        data, keep = ms.square_matrix_lookup(square_df)
+        assert keep == ["Cs", "Sr"]
+        assert data.loc["Cs", "Sr"] == pytest.approx(0.5)
 
 
 class TestTopTanksByInventory:

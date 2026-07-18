@@ -16,6 +16,27 @@ from data_model import HanfordDataset
 from elements import normalize_element_symbol
 
 
+def square_matrix_lookup(square_df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+    """Reshape an "Element" + one-column-per-element square DataFrame (the
+    shape correlation_science/structure_science return for corr/Jaccard/
+    partial-correlation matrices) into an Element-indexed square DataFrame
+    plus its element list, ready for heatmap plotting or network-edge
+    lookup. Shared by plot_helpers (heatmaps) and structure_science
+    (network graph edges) so there is one reshape implementation instead of
+    two copies drifting apart."""
+    if square_df is None or square_df.empty or "Element" not in square_df.columns:
+        return pd.DataFrame(), []
+    data = square_df.copy().set_index("Element")
+    elements = [str(x) for x in data.index.tolist()]
+    keep = [e for e in elements if e in data.columns]
+    if not keep:
+        return pd.DataFrame(), []
+    data = data.loc[keep, keep]
+    for c in data.columns:
+        data[c] = pd.to_numeric(data[c], errors="coerce")
+    return data, keep
+
+
 def log10_safe(values) -> np.ndarray:
     """log10 with non-positive values mapped to NaN instead of raising/-inf."""
     arr = np.asarray(values, dtype=float)
