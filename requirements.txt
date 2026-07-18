@@ -1,0 +1,11 @@
+polars
+pandas
+numpy
+matplotlib
+pyarrow
+seaborn
+scipy
+scikit-learn
+networkx
+plotly
+xraydb

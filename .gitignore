@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+build/
+dist/
+*.spec
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.vscode/
+.idea/
+
+# Data files - not distributed with the app, auto-detected next to it at runtime
+Hanford.csv
+Tank_attributes.csv
+*.parquet
+
+# App-generated output
+ember_outputs/

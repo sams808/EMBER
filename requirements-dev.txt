@@ -1,0 +1,4 @@
+-r requirements.txt
+-r requirements-qt.txt
+pytest
+pytest-qt
