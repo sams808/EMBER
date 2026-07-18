@@ -20,6 +20,7 @@ import correlation_science as csci
 import export_utils
 import plot_helpers as ph
 from data_model import HanfordDataset
+from qt_correlations_workbench import WorkbenchTab
 from qt_widgets import DataFrameTableView, PlotWidget
 
 METRICS = ["log10_plus1", "log10_inventory", "fraction", "inventory", "presence"]
@@ -268,10 +269,11 @@ class CorrelationsPage(QWidget):
 
         self.quick_scan_tab = QuickScanTab(app_window)
         self.tabs.addTab(self.quick_scan_tab, "Quick Scan")
-        self.workbench_tab = _ComingSoonTab("Association Workbench (kg)")
+        self.workbench_tab = WorkbenchTab(app_window)
         self.tabs.addTab(self.workbench_tab, "Association Workbench (kg)")
         self.structure_tab = _ComingSoonTab("Structure")
         self.tabs.addTab(self.structure_tab, "Structure")
 
     def on_dataset_changed(self, dataset: HanfordDataset) -> None:
         self.quick_scan_tab.on_dataset_changed(dataset)
+        self.workbench_tab.on_dataset_changed(dataset)

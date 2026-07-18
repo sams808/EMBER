@@ -182,6 +182,130 @@ class TestSelectedElementCorrelations:
         assert row["Min_pairwise_correlation"] <= row["Max_pairwise_correlation"]
 
 
+class TestKgCorrelationWorkbench:
+    def test_too_few_elements_after_parsing_raises(self, corr_dataset):
+        with pytest.raises(ValueError, match="at least two valid elements"):
+            cs.kg_correlation_workbench(corr_dataset, elements_text="Cs")
+
+    def test_skip_list_message_included_when_it_empties_selection(self, corr_dataset):
+        with pytest.raises(ValueError, match="Skipped elements: Cs, Sr"):
+            cs.kg_correlation_workbench(corr_dataset, elements_text="Cs, Sr", skip_elements_text="Cs, Sr")
+
+    def test_user_list_selection(self, corr_dataset):
+        out = cs.kg_correlation_workbench(corr_dataset, elements_text="Cs, Sr, Mo", value_mode="inventory")
+        assert set(out["element_stats"]["Element"]) == {"Cs", "Sr", "Mo"}
+        assert set(out["raw_matrix"].columns) - {"WasteSiteId"} == {"Cs", "Sr", "Mo"}
+
+    def test_top_kg_selection_mode(self, corr_dataset):
+        out = cs.kg_correlation_workbench(corr_dataset, selection_mode="Top kg elements", top_n_elements=2, value_mode="inventory")
+        # Totals: Sr=300 > Cs=150 > Mo=150 > Ba=16 > Fe=25 -- top 2 by total is Sr, Cs (or Mo tie-broken by polars sort).
+        assert len(set(out["element_stats"]["Element"])) == 2
+        assert "Sr" in set(out["element_stats"]["Element"])
+
+    def test_skip_list_applied_before_top_n(self, corr_dataset):
+        # Skipping Sr means "top 2" must be computed from the remaining
+        # elements (Cs, Mo, Fe, Ba), not silently drop to 1.
+        out = cs.kg_correlation_workbench(
+            corr_dataset, selection_mode="Top kg elements", top_n_elements=2,
+            value_mode="inventory", skip_elements_text="Sr",
+        )
+        elements = set(out["element_stats"]["Element"])
+        assert "Sr" not in elements
+        assert len(elements) == 2
+
+    def test_empty_user_list_falls_back_to_top_kg(self, corr_dataset):
+        out = cs.kg_correlation_workbench(corr_dataset, elements_text="", selection_mode="User list", top_n_elements=3, value_mode="inventory")
+        assert len(set(out["element_stats"]["Element"])) == 3
+
+    def test_pair_stats_perfect_positive_scores_highest(self, corr_dataset):
+        out = cs.kg_correlation_workbench(corr_dataset, elements_text="Cs, Sr, Mo", value_mode="inventory")
+        pairs = out["pair_stats"].set_index(["Element_A", "Element_B"])
+        cs_sr = pairs.loc[("Cs", "Sr")]
+        assert cs_sr["Correlation_r"] == pytest.approx(1.0)
+        assert cs_sr["Jaccard_presence"] == pytest.approx(1.0)  # present at all 5 tanks
+        assert cs_sr["PreferredAssociationScore_proxy"] == pytest.approx(math.log1p(5))
+        # Negative-r pairs must score exactly 0, not a negative number.
+        cs_mo = pairs.loc[("Cs", "Mo")]
+        assert cs_mo["Correlation_r"] == pytest.approx(-1.0)
+        assert cs_mo["PreferredAssociationScore_proxy"] == pytest.approx(0.0)
+        assert out["pair_stats"].iloc[0]["Rank_preferred_association"] == 1
+        assert out["pair_stats"].iloc[0]["Element_A"] == "Cs"
+        assert out["pair_stats"].iloc[0]["Element_B"] == "Sr"
+
+    def test_corr_and_jaccard_matrices_are_square_and_symmetric(self, corr_dataset):
+        out = cs.kg_correlation_workbench(corr_dataset, elements_text="Cs, Sr, Mo", value_mode="inventory")
+        corr = out["corr_matrix"].set_index("Element")
+        assert corr.loc["Cs", "Sr"] == pytest.approx(corr.loc["Sr", "Cs"])
+        assert corr.loc["Cs", "Cs"] == pytest.approx(1.0)
+
+    def test_sparse_element_presence_fraction(self, corr_dataset):
+        out = cs.kg_correlation_workbench(corr_dataset, elements_text="Cs, Ba", value_mode="inventory")
+        stats = out["element_stats"].set_index("Element")
+        assert stats.loc["Ba", "N_tanks_present"] == 2
+        assert stats.loc["Ba", "PresenceFraction_pct"] == pytest.approx(40.0)
+        assert stats.loc["Cs", "PresenceFraction_pct"] == pytest.approx(100.0)
+
+    def test_tank_similarity_shape(self, corr_dataset):
+        out = cs.kg_correlation_workbench(corr_dataset, elements_text="Cs, Sr, Mo", value_mode="inventory")
+        sim = out["tank_similarity"]
+        assert not sim.empty
+        assert sim.shape[0] == 5  # 5 tanks
+
+    def test_constant_element_excluded_from_tank_similarity(self, corr_dataset):
+        # Fe is constant -> must be dropped from the tank-similarity basis
+        # (a constant column has undefined correlation), not crash it.
+        out = cs.kg_correlation_workbench(corr_dataset, elements_text="Cs, Sr, Fe", value_mode="inventory")
+        assert not out["tank_similarity"].empty
+
+    def test_all_value_modes_run_without_crash(self, corr_dataset):
+        for mode in ["inventory", "log10_inventory", "log10_plus1", "fraction", "presence"]:
+            out = cs.kg_correlation_workbench(corr_dataset, elements_text="Cs, Sr, Mo", value_mode=mode)
+            assert not out["metric_matrix"].empty
+
+    def test_unknown_value_mode_raises(self, corr_dataset):
+        with pytest.raises(ValueError, match="Unknown kg seaborn metric"):
+            cs.kg_correlation_workbench(corr_dataset, elements_text="Cs, Sr", value_mode="bogus")
+
+    def test_exclude_zeros_mode(self, corr_dataset):
+        out = cs.kg_correlation_workbench(corr_dataset, elements_text="Cs, Sr, Mo", value_mode="inventory", include_zeros=False)
+        pairs = out["pair_stats"].set_index(["Element_A", "Element_B"])
+        assert pairs.loc[("Cs", "Sr"), "Correlation_r"] == pytest.approx(1.0)
+
+    def test_tank_element_long_only_positive_rows(self, corr_dataset):
+        out = cs.kg_correlation_workbench(corr_dataset, elements_text="Cs, Ba", value_mode="inventory")
+        long_df = out["tank_element_long"]
+        # Ba is present at only 2/5 tanks -- the long table must not include
+        # zero-valued (absent) rows for it.
+        assert len(long_df[long_df["Element"] == "Ba"]) == 2
+
+    def test_excluded_elements_table_records_skip_list(self, corr_dataset):
+        out = cs.kg_correlation_workbench(corr_dataset, elements_text="Cs, Sr, Mo", skip_elements_text="Fe, Ba", value_mode="inventory")
+        excluded = out["excluded_elements"]
+        assert set(excluded["ExcludedElement"]) == {"Fe", "Ba"}
+        assert (excluded["Reason"] == "User skip list").all()
+
+    def test_all_requested_elements_absent_raises(self, corr_dataset):
+        # "Au"/"Pt" are valid symbols but never appear in the kg data at
+        # all -- distinct from the len(elements)<2 case, this passes that
+        # check but then finds zero matching inventory rows.
+        with pytest.raises(ValueError, match="No kg inventory rows matched"):
+            cs.kg_correlation_workbench(corr_dataset, elements_text="Au, Pt", value_mode="inventory")
+
+    def test_one_requested_element_absent_becomes_zero_column(self, corr_dataset):
+        # "Au" is valid but absent; "Cs" is present -- raw_matrix must keep
+        # both requested columns, force-filling Au with zeros rather than
+        # silently dropping it.
+        out = cs.kg_correlation_workbench(corr_dataset, elements_text="Cs, Au", value_mode="inventory")
+        assert set(out["raw_matrix"].columns) - {"WasteSiteId"} == {"Cs", "Au"}
+        assert (out["raw_matrix"]["Au"] == 0.0).all()
+
+    def test_empty_dataframe_when_no_kg_rows_match(self, corr_dataset):
+        out = cs.kg_correlation_workbench(corr_dataset, elements_text="Cs, Sr", min_inventory=1e9)
+        assert out["element_stats"].empty
+        assert out["raw_matrix"].empty
+        assert set(out["excluded_elements"].columns) == {"ExcludedElement", "Reason"}
+
+
 class TestFullCorrelationMatrix:
     def test_diagonal_is_one(self, corr_dataset):
         corr, matrix = cs.full_correlation_matrix(corr_dataset, value_mode="inventory", top_n_elements=10)

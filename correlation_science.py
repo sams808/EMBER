@@ -8,6 +8,7 @@ matrix_science.element_inventory_matrix, the shared tank x element pivot.
 """
 from __future__ import annotations
 
+import math
 from itertools import combinations
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -186,6 +187,192 @@ def selected_element_correlations(
             "Max_pairwise_correlation": pair_table["Correlation_r"].max() if not pair_table.empty else np.nan,
         }])
     return pair_table, joint, matrix
+
+
+def kg_correlation_workbench(
+    dataset: HanfordDataset, elements_text: str = "", selection_mode: str = "User list",
+    top_n_elements: int = 20, value_mode: str = "log10_plus1", method: str = "pearson",
+    min_inventory: float = 0.0, include_zeros: bool = True, skip_elements_text: str = "",
+) -> Dict[str, pd.DataFrame]:
+    """Build every table used by the kg-only Association Workbench.
+
+    Deliberately kg-only: this is chemical mass association screening for
+    vitrification/blending, not a mix of chemical mass and radiological
+    activity. One row = one tank; one column = one parsed element. The raw
+    matrix is inventory_kg; the metric matrix is the transformed version
+    used for correlations and plots. skip_elements_text is applied BEFORE
+    "Top kg elements" selection, so "top 25" means top 25 after removing
+    the skipped elements.
+    """
+    unit = "kg"
+    selection_mode_norm = (selection_mode or "User list").lower()
+    skip_elements = parse_element_list(skip_elements_text)
+    skip_set = set(skip_elements)
+    df = dataset.require_df().filter(
+        (pl.col("Units") == unit) & pl.col("Element").is_not_null() & (pl.col("Inventory") > float(min_inventory))
+    )
+    if skip_set:
+        df = df.filter(~pl.col("Element").is_in(list(skip_set)))
+    if df.is_empty():
+        empty = pd.DataFrame()
+        return {
+            "element_stats": empty, "pair_stats": empty, "raw_matrix": empty, "metric_matrix": empty,
+            "corr_matrix": empty, "jaccard_matrix": empty, "tank_similarity": empty,
+            "tank_element_long": empty, "presence_matrix": empty,
+            "excluded_elements": pd.DataFrame({"ExcludedElement": skip_elements, "Reason": "User skip list"}),
+        }
+
+    if "top" in selection_mode_norm:
+        elements = (
+            df.group_by("Element").agg(pl.col("Inventory").sum().alias("Total_inventory_kg"))
+            .sort("Total_inventory_kg", descending=True).head(max(int(top_n_elements), 2))
+            .get_column("Element").to_list()
+        )
+    else:
+        elements = parse_element_list(elements_text)
+        if not elements:
+            # Forgiving default: an empty list falls back to top kg elements
+            # rather than failing outright.
+            elements = (
+                df.group_by("Element").agg(pl.col("Inventory").sum().alias("Total_inventory_kg"))
+                .sort("Total_inventory_kg", descending=True).head(max(int(top_n_elements), 2))
+                .get_column("Element").to_list()
+            )
+    elements = [e for e in elements if e and e not in skip_set]
+    if len(elements) < 2:
+        skipped_msg = f" Skipped elements: {', '.join(skip_elements)}." if skip_elements else ""
+        raise ValueError("Need at least two valid elements after applying the skip list, e.g. Cs, Sr, Tc, I, Se." + skipped_msg)
+
+    raw_matrix = element_inventory_matrix(
+        dataset, unit=unit, elements=elements, min_inventory=float(min_inventory),
+        value_mode="inventory", include_all_tanks=True,
+    )
+    if raw_matrix.empty:
+        raise ValueError("No kg inventory rows matched the selected elements.")
+    for e in elements:
+        if e not in raw_matrix.columns:
+            raw_matrix[e] = 0.0
+    raw_matrix = raw_matrix[["WasteSiteId"] + elements]
+    raw_vals = raw_matrix.set_index("WasteSiteId").apply(pd.to_numeric, errors="coerce").fillna(0.0)
+
+    mode = (value_mode or "log10_plus1").lower()
+    if mode == "inventory":
+        metric_vals = raw_vals.copy()
+        metric_label = "Inventory_kg"
+    elif mode == "log10_inventory":
+        metric_vals = raw_vals.replace(0.0, np.nan).apply(lambda col: np.log10(col))
+        metric_label = "log10_inventory_kg_present_only"
+    elif mode == "log10_plus1":
+        metric_vals = np.log10(raw_vals + 1.0)
+        metric_label = "log10_inventory_kg_plus1"
+    elif mode == "fraction":
+        denom = raw_vals.sum(axis=1).replace(0.0, np.nan)
+        metric_vals = raw_vals.div(denom, axis=0)
+        metric_label = "Fraction_of_selected_kg_inventory"
+    elif mode == "presence":
+        metric_vals = (raw_vals > 0).astype(float)
+        metric_label = "Presence_0_or_1"
+    else:
+        raise ValueError(f"Unknown kg seaborn metric: {value_mode}")
+    metric_matrix = metric_vals.reset_index()
+
+    presence_bool = raw_vals > 0
+    n_tanks_total = len(raw_vals)
+    totals = raw_vals.sum(axis=0)
+    element_rows = []
+    for e in elements:
+        present = presence_bool[e]
+        values_present = raw_vals.loc[present, e]
+        element_rows.append({
+            "Element": e, "Units": "kg", "Total_inventory_kg": float(totals.get(e, 0.0)),
+            "N_tanks_present": int(present.sum()), "N_tanks_total": int(n_tanks_total),
+            "PresenceFraction_pct": 100.0 * float(present.sum()) / max(n_tanks_total, 1),
+            "Mean_kg_present_tanks_only": float(values_present.mean()) if len(values_present) else np.nan,
+            "Median_kg_present_tanks_only": float(values_present.median()) if len(values_present) else np.nan,
+            "Std_kg_present_tanks_only": float(values_present.std(ddof=1)) if len(values_present) > 1 else np.nan,
+            "Max_kg_in_one_tank": float(values_present.max()) if len(values_present) else np.nan,
+        })
+    element_stats = pd.DataFrame(element_rows).sort_values("Total_inventory_kg", ascending=False).reset_index(drop=True)
+
+    # Pairwise correlations and co-occurrence statistics.
+    pair_rows = []
+    corr_square = pd.DataFrame(np.eye(len(elements)), index=elements, columns=elements, dtype=float)
+    jaccard_square = pd.DataFrame(np.eye(len(elements)), index=elements, columns=elements, dtype=float)
+    for a, b in combinations(elements, 2):
+        raw_a, raw_b = raw_vals[a], raw_vals[b]
+        pres_a, pres_b = presence_bool[a], presence_bool[b]
+        both = pres_a & pres_b
+        either = pres_a | pres_b
+        pair = pd.DataFrame({a: metric_vals[a], b: metric_vals[b]})
+        if not include_zeros:
+            pair = pair.loc[both]
+        pair = pair.replace([np.inf, -np.inf], np.nan).dropna()
+        r = pair[a].corr(pair[b], method=method) if len(pair) >= 3 else np.nan
+        n_a, n_b = int(pres_a.sum()), int(pres_b.sum())
+        n_both, n_either = int(both.sum()), int(either.sum())
+        jaccard = float(n_both / n_either) if n_either else np.nan
+        overlap_a_pct = 100.0 * n_both / max(n_a, 1)
+        overlap_b_pct = 100.0 * n_both / max(n_b, 1)
+        min_sum = np.minimum(raw_a, raw_b).sum()
+        # Ranking proxy only: rewards positive correlation, repeated
+        # co-occurrence, and overlap. Negative r is kept in the table but
+        # never scores as a preferred association.
+        score = (max(float(r), 0.0) if pd.notna(r) else 0.0) * math.log1p(n_both) * (jaccard if pd.notna(jaccard) else 0.0)
+        corr_square.loc[a, b] = corr_square.loc[b, a] = r
+        jaccard_square.loc[a, b] = jaccard_square.loc[b, a] = jaccard
+        pair_rows.append({
+            "Element_A": a, "Element_B": b, "Units": "kg", "Metric": mode, "Metric_label": metric_label,
+            "Method": method, "Include_zeros": bool(include_zeros),
+            "Correlation_r": float(r) if pd.notna(r) else np.nan,
+            "AbsCorrelation": abs(float(r)) if pd.notna(r) else np.nan,
+            "N_tanks_used_for_corr": int(len(pair)), "N_tanks_total": int(n_tanks_total),
+            "N_A_present": n_a, "N_B_present": n_b, "N_both_present": n_both, "N_either_present": n_either,
+            "Jaccard_presence": jaccard, "OverlapFraction_of_A_pct": overlap_a_pct,
+            "OverlapFraction_of_B_pct": overlap_b_pct, "Total_A_kg": float(totals.get(a, 0.0)),
+            "Total_B_kg": float(totals.get(b, 0.0)), "Shared_min_inventory_proxy_kg": float(min_sum),
+            "PreferredAssociationScore_proxy": float(score),
+        })
+    pair_stats = pd.DataFrame(pair_rows)
+    if not pair_stats.empty:
+        pair_stats = pair_stats.sort_values(
+            ["PreferredAssociationScore_proxy", "AbsCorrelation", "N_both_present"], ascending=[False, False, False],
+        ).reset_index(drop=True)
+        pair_stats.insert(0, "Rank_preferred_association", np.arange(1, len(pair_stats) + 1))
+
+    corr_df = corr_square.reset_index().rename(columns={"index": "Element"})
+    jaccard_df = jaccard_square.reset_index().rename(columns={"index": "Element"})
+    presence_matrix = presence_bool.astype(int).reset_index()
+
+    tank_similarity = pd.DataFrame()
+    valid_metric = metric_vals.replace([np.inf, -np.inf], np.nan)
+    # Drop constant elements first -- correlation between tanks is undefined otherwise.
+    usable_cols = [c for c in valid_metric.columns if valid_metric[c].nunique(dropna=True) > 1]
+    if len(usable_cols) >= 2 and len(valid_metric) >= 2:
+        tank_corr = valid_metric[usable_cols].T.corr(method=method)
+        tank_similarity = tank_corr.reset_index().rename(columns={"index": "WasteSiteId"})
+
+    long_rows = []
+    for tank, row in raw_vals.iterrows():
+        selected_total = float(row.sum())
+        for e in elements:
+            inv = float(row[e])
+            if inv > 0:
+                long_rows.append({
+                    "WasteSiteId": tank, "Element": e, "Inventory_kg": inv,
+                    "Fraction_of_selected_kg_inventory": inv / selected_total if selected_total > 0 else np.nan,
+                })
+    tank_element_long = (
+        pd.DataFrame(long_rows).sort_values(["WasteSiteId", "Inventory_kg"], ascending=[True, False])
+        if long_rows else pd.DataFrame()
+    )
+
+    return {
+        "element_stats": element_stats, "pair_stats": pair_stats, "raw_matrix": raw_matrix,
+        "metric_matrix": metric_matrix, "corr_matrix": corr_df, "jaccard_matrix": jaccard_df,
+        "tank_similarity": tank_similarity, "tank_element_long": tank_element_long,
+        "presence_matrix": presence_matrix,
+        "excluded_elements": pd.DataFrame({"ExcludedElement": skip_elements, "Reason": "User skip list"}),
+    }
 
 
 def full_correlation_matrix(

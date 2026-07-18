@@ -6,6 +6,7 @@ taking a qt_widgets.PlotWidget to draw into.
 """
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import matplotlib
@@ -433,4 +434,494 @@ def plot_target_vs_total(panel, data: pd.DataFrame, title: str) -> None:
     ax.grid(True, alpha=0.25)
     ax.legend(title="Units")
     panel.figure.tight_layout()
+    panel.canvas.draw_idle()
+
+
+# ---------------------------------------------------------------------------
+# kg Association Workbench (M7): coherent-colors palette + 17 plot types
+# (8 functions, several parameterized by a `kind`/`mode` argument).
+# ---------------------------------------------------------------------------
+
+def _seaborn_available_or_message(panel) -> bool:
+    if sns is None:
+        panel.show_message("Seaborn is not installed. Run: python -m pip install seaborn")
+        return False
+    return True
+
+
+def _use_coherent_colors(color_mode: str = "Basic") -> bool:
+    """Two visual styles: Basic (conservative grayscale) and Coherent
+    colors (consistent color families across correlation, co-presence,
+    abundance, and positive/negative-association plots)."""
+    return str(color_mode or "").strip().lower().startswith("coherent")
+
+
+def _set_seaborn_theme(color_mode: str = "Basic") -> None:
+    if sns is None:
+        return
+    if _use_coherent_colors(color_mode):
+        sns.set_theme(style="whitegrid", context="notebook", font_scale=0.95)
+    else:
+        sns.set_theme(style="ticks", context="notebook", font_scale=0.95)
+
+
+def _corr_cmap(color_mode: str = "Basic") -> str:
+    return "vlag" if _use_coherent_colors(color_mode) else "coolwarm"
+
+
+def _sequential_cmap(color_mode: str = "Basic") -> str:
+    return "mako" if _use_coherent_colors(color_mode) else "Greys"
+
+
+def _jaccard_cmap(color_mode: str = "Basic") -> str:
+    return "crest" if _use_coherent_colors(color_mode) else "Greys"
+
+
+def _projection_bar_color(color_mode: str = "Basic") -> str:
+    return "#4C78A8" if _use_coherent_colors(color_mode) else "0.45"
+
+
+def _main_point_color(color_mode: str = "Basic") -> str:
+    return "#4C78A8" if _use_coherent_colors(color_mode) else "0.35"
+
+
+def _line_color(color_mode: str = "Basic") -> str:
+    return "#D55E00" if _use_coherent_colors(color_mode) else "0.15"
+
+
+def _pair_palette_name(mode: str, color_mode: str = "Basic") -> Optional[str]:
+    if not _use_coherent_colors(color_mode):
+        return None
+    mode = str(mode or "").lower()
+    if "negative" in mode:
+        return "rocket_r"
+    if "positive" in mode or "jaccard" in mode:
+        return "crest"
+    return "flare"
+
+
+def _square_matrix_from_element_table(square_df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+    if square_df is None or square_df.empty or "Element" not in square_df.columns:
+        return pd.DataFrame(), []
+    data = square_df.copy().set_index("Element")
+    elements = [str(x) for x in data.index.tolist()]
+    keep = [e for e in elements if e in data.columns]
+    if not keep:
+        return pd.DataFrame(), []
+    data = data.loc[keep, keep]
+    for c in data.columns:
+        data[c] = pd.to_numeric(data[c], errors="coerce")
+    return data, keep
+
+
+def plot_seaborn_lower_triangle_matrix(
+    panel, square_df: pd.DataFrame, title: str, cbar_label: str, cmap: str = "vlag",
+    center: Optional[float] = 0.0, annotate: bool = False, totals: Optional[pd.DataFrame] = None,
+    projections: bool = False, color_mode: str = "Basic",
+) -> None:
+    """Lower-triangle heatmap shared by the corr heatmap, corr+projections,
+    and Jaccard co-presence plot types (cbar_label picks the colormap)."""
+    if not _seaborn_available_or_message(panel):
+        return
+    _set_seaborn_theme(color_mode)
+    data, elements = _square_matrix_from_element_table(square_df)
+    if data.empty:
+        panel.show_message("No square matrix to plot")
+        return
+    n = len(elements)
+    mask = np.triu(np.ones_like(data.to_numpy(dtype=float), dtype=bool), k=1)
+    cmap = (
+        _corr_cmap(color_mode) if "correlation" in cbar_label.lower()
+        else (_jaccard_cmap(color_mode) if "jaccard" in cbar_label.lower() else _sequential_cmap(color_mode))
+    )
+    projection_color = _projection_bar_color(color_mode)
+    panel.figure.clear()
+    base_size = min(max(6.5, n * 0.34), 19.0)
+    if projections:
+        total_map: Dict[str, float] = {}
+        if totals is not None and not totals.empty and "Element" in totals.columns and "Total_inventory_kg" in totals.columns:
+            total_map = {str(r.Element): float(r.Total_inventory_kg or 0.0) for r in totals.itertuples(index=False)}
+        proj = np.array([math.log10(max(total_map.get(e, 0.0), 0.0) + 1.0) for e in elements], dtype=float)
+        panel.figure.set_size_inches(base_size + 2.5, base_size + 1.8, forward=True)
+        gs = panel.figure.add_gridspec(2, 2, width_ratios=[base_size, 2.2], height_ratios=[1.4, base_size], wspace=0.05, hspace=0.05)
+        ax_top = panel.figure.add_subplot(gs[0, 0])
+        ax = panel.figure.add_subplot(gs[1, 0])
+        ax_right = panel.figure.add_subplot(gs[1, 1], sharey=ax)
+        x = np.arange(n)
+        ax_top.bar(x, proj, color=projection_color, alpha=0.88)
+        ax_top.set_xlim(-0.5, n - 0.5)
+        ax_top.set_ylabel("log10(total kg+1)", fontsize=8)
+        ax_top.tick_params(axis="x", bottom=False, labelbottom=False)
+        ax_top.grid(True, axis="y", alpha=0.2)
+        for spine in ("top", "right"):
+            ax_top.spines[spine].set_visible(False)
+    else:
+        panel.figure.set_size_inches(base_size, base_size, forward=True)
+        ax = panel.figure.add_subplot(111)
+
+    sns.heatmap(
+        data, mask=mask, vmin=-1 if "correlation" in cbar_label.lower() else 0, vmax=1, center=center, cmap=cmap,
+        square=True, linewidths=0.4 if n <= 45 else 0.0, linecolor="white",
+        annot=bool(annotate and n <= 25), fmt=".2f", cbar_kws={"label": cbar_label, "shrink": 0.75}, ax=ax,
+    )
+    ax.set_title(title)
+    ax.set_xlabel("Element")
+    ax.set_ylabel("Element")
+    ax.tick_params(axis="x", rotation=90, labelsize=8 if n <= 55 else 6)
+    ax.tick_params(axis="y", rotation=0, labelsize=8 if n <= 55 else 6)
+
+    if projections:
+        y_centers = np.arange(n) + 0.5
+        ax_right.barh(y_centers, proj, height=0.8, color=projection_color, alpha=0.88)
+        ax_right.set_xlabel("log10(total kg+1)", fontsize=8)
+        ax_right.tick_params(axis="y", left=False, labelleft=False)
+        ax_right.grid(True, axis="x", alpha=0.2)
+        for spine in ("top", "right"):
+            ax_right.spines[spine].set_visible(False)
+    panel.ax = ax
+    panel.canvas.draw_idle()
+
+
+def plot_seaborn_top_associations(panel, pair_stats: pd.DataFrame, top_n: int = 30, mode: str = "preferred", color_mode: str = "Basic") -> None:
+    """mode: preferred / positive / negative / jaccard -- 4 of the 17 plot types."""
+    if not _seaborn_available_or_message(panel):
+        return
+    _set_seaborn_theme(color_mode)
+    if pair_stats is None or pair_stats.empty:
+        panel.show_message("No pair statistics. Build the workbench data first.")
+        return
+    pdf = pair_stats.copy()
+    if mode == "positive":
+        pdf = pdf[pdf["Correlation_r"] > 0].sort_values("Correlation_r", ascending=False)
+        value_col, xlabel = "Correlation_r", "Positive correlation r (kg matrix)"
+    elif mode == "negative":
+        pdf = pdf[pdf["Correlation_r"] < 0].sort_values("Correlation_r", ascending=True)
+        value_col, xlabel = "Correlation_r", "Negative correlation r (kg matrix)"
+    elif mode == "jaccard":
+        pdf = pdf.sort_values("Jaccard_presence", ascending=False)
+        value_col, xlabel = "Jaccard_presence", "Jaccard co-presence across tanks"
+    else:
+        pdf = pdf.sort_values("PreferredAssociationScore_proxy", ascending=False)
+        value_col, xlabel = "PreferredAssociationScore_proxy", "Preferred association score proxy"
+    pdf = pdf.head(int(top_n)).copy()
+    if pdf.empty:
+        panel.show_message("No associations to plot")
+        return
+    pdf["Pair"] = pdf["Element_A"].astype(str) + "-" + pdf["Element_B"].astype(str) + "  (n=" + pdf["N_both_present"].astype(str) + ")"
+    pdf = pdf.iloc[::-1]
+    panel.ax.clear()
+    panel.figure.set_size_inches(9, max(5, min(16, 0.32 * len(pdf) + 2)), forward=True)
+    ax = panel.ax
+    palette_name = _pair_palette_name(mode, color_mode)
+    if palette_name:
+        try:
+            palette = sns.color_palette(palette_name, n_colors=len(pdf))
+            sns.barplot(data=pdf, y="Pair", x=value_col, hue="Pair", palette=palette, legend=False, ax=ax, orient="h")
+        except Exception:
+            sns.barplot(data=pdf, y="Pair", x=value_col, color=_main_point_color(color_mode), ax=ax, orient="h")
+    else:
+        sns.barplot(data=pdf, y="Pair", x=value_col, color="0.55", ax=ax, orient="h")
+    ax.axvline(0, color=_line_color(color_mode), linewidth=0.9)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Element pair")
+    ax.set_title(f"Top kg element associations ({mode})")
+    ax.grid(True, axis="x", alpha=0.25)
+    panel.figure.tight_layout()
+    panel.canvas.draw_idle()
+
+
+def plot_seaborn_pair_matrix(
+    panel, metric_matrix: pd.DataFrame, raw_matrix: pd.DataFrame, elements: Sequence[str], metric: str,
+    kind: str = "regression", max_elements: int = 8, color_mode: str = "Basic",
+) -> None:
+    """kind: regression / scatter / kde -- 3 of the 17 plot types. Lower
+    triangle only, diagonal = histogram+KDE, points colored by whether both
+    elements are present in that tank."""
+    if not _seaborn_available_or_message(panel):
+        return
+    _set_seaborn_theme(color_mode)
+    clean = [e for e in elements if e in metric_matrix.columns]
+    clean = clean[:max(2, int(max_elements))]
+    if len(clean) < 2:
+        panel.show_message("Need at least two elements in the kg matrix")
+        return
+    data = metric_matrix[["WasteSiteId"] + clean].copy()
+    for e in clean:
+        data[e] = numeric_plot_series(data[e])
+    data = data.replace([np.inf, -np.inf], np.nan)
+    data = data[data[clean].notna().sum(axis=1) >= 2]
+    if data.empty:
+        panel.show_message("No finite values for pair matrix")
+        return
+    n = len(clean)
+    size = min(max(2.0 * n, 7), 18)
+    panel.figure.clear()
+    panel.figure.set_size_inches(size, size, forward=True)
+    axes = panel.figure.subplots(n, n, squeeze=False)
+    raw = raw_matrix.set_index("WasteSiteId") if raw_matrix is not None and not raw_matrix.empty else pd.DataFrame()
+    for i, y in enumerate(clean):
+        for j, x in enumerate(clean):
+            ax = axes[i, j]
+            if j > i:
+                ax.set_axis_off()
+                continue
+            if i == j:
+                vals = data[y].dropna()
+                if vals.nunique() <= 1:
+                    ax.text(0.5, 0.5, "constant", ha="center", va="center", transform=ax.transAxes)
+                else:
+                    sns.histplot(vals, kde=True, ax=ax, bins="auto", color=_main_point_color(color_mode))
+                ax.set_ylabel("")
+            else:
+                sub = data[["WasteSiteId", x, y]].dropna()
+                if raw is not None and not raw.empty and x in raw.columns and y in raw.columns:
+                    both = (raw.loc[sub["WasteSiteId"], x].to_numpy(dtype=float) > 0) & (raw.loc[sub["WasteSiteId"], y].to_numpy(dtype=float) > 0)
+                    sub = sub.assign(_both_present=both)
+                else:
+                    sub = sub.assign(_both_present=True)
+                if sub.empty:
+                    ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes)
+                elif kind == "kde":
+                    if sub[x].nunique() > 1 and sub[y].nunique() > 1 and len(sub) >= 6:
+                        try:
+                            sns.kdeplot(data=sub, x=x, y=y, fill=True, levels=6, thresh=0.05, cmap=_sequential_cmap(color_mode), ax=ax)
+                            sns.scatterplot(data=sub, x=x, y=y, hue="_both_present", palette={False: "0.70", True: _main_point_color(color_mode)}, legend=False, s=12, alpha=0.45, ax=ax)
+                        except Exception:
+                            sns.scatterplot(data=sub, x=x, y=y, hue="_both_present", palette={False: "0.70", True: _main_point_color(color_mode)}, legend=False, s=18, alpha=0.65, ax=ax)
+                    else:
+                        sns.scatterplot(data=sub, x=x, y=y, hue="_both_present", palette={False: "0.70", True: _main_point_color(color_mode)}, legend=False, s=18, alpha=0.65, ax=ax)
+                elif kind == "scatter":
+                    sns.scatterplot(data=sub, x=x, y=y, hue="_both_present", palette={False: "0.70", True: _main_point_color(color_mode)}, legend=False, s=18, alpha=0.70, ax=ax)
+                else:
+                    if sub[x].nunique() > 1 and sub[y].nunique() > 1 and len(sub) >= 3:
+                        sns.regplot(data=sub, x=x, y=y, scatter_kws={"s": 16, "alpha": 0.55, "color": _main_point_color(color_mode)}, line_kws={"linewidth": 1.0, "color": _line_color(color_mode)}, ax=ax)
+                    else:
+                        sns.scatterplot(data=sub, x=x, y=y, color=_main_point_color(color_mode), s=18, alpha=0.70, ax=ax)
+            if i < n - 1:
+                ax.set_xlabel("")
+                ax.set_xticklabels([])
+            else:
+                ax.set_xlabel(x, fontsize=8)
+            if j > 0:
+                ax.set_ylabel("")
+                ax.set_yticklabels([])
+            else:
+                ax.set_ylabel(y, fontsize=8)
+            ax.tick_params(labelsize=7)
+    panel.figure.suptitle(f"Lower pair matrix - kg only - {metric}", y=0.995)
+    panel.ax = axes[-1, 0]
+    panel.canvas.draw_idle()
+
+
+def plot_seaborn_joint_first_two(panel, metric_matrix: pd.DataFrame, elements: Sequence[str], metric: str, kind: str = "scatter", color_mode: str = "Basic") -> None:
+    """kind: regression / scatter / kde -- 3 of the 17 plot types, first two selected elements only."""
+    if not _seaborn_available_or_message(panel):
+        return
+    _set_seaborn_theme(color_mode)
+    clean = [e for e in elements if e in metric_matrix.columns]
+    if len(clean) < 2:
+        panel.show_message("Need at least two elements")
+        return
+    x, y = clean[0], clean[1]
+    data = metric_matrix[["WasteSiteId", x, y]].copy()
+    data[x] = numeric_plot_series(data[x])
+    data[y] = numeric_plot_series(data[y])
+    data = data.replace([np.inf, -np.inf], np.nan).dropna(subset=[x, y])
+    if data.empty:
+        panel.show_message("No finite values for joint plot")
+        return
+    panel.figure.clear()
+    panel.figure.set_size_inches(8, 8, forward=True)
+    gs = panel.figure.add_gridspec(2, 2, width_ratios=[5, 1.2], height_ratios=[1.2, 5], wspace=0.05, hspace=0.05)
+    ax_top = panel.figure.add_subplot(gs[0, 0])
+    ax = panel.figure.add_subplot(gs[1, 0])
+    ax_right = panel.figure.add_subplot(gs[1, 1], sharey=ax)
+    if kind == "kde" and data[x].nunique() > 1 and data[y].nunique() > 1 and len(data) >= 6:
+        try:
+            sns.kdeplot(data=data, x=x, y=y, fill=True, levels=8, thresh=0.05, cmap=_sequential_cmap(color_mode), ax=ax)
+            sns.scatterplot(data=data, x=x, y=y, color=_main_point_color(color_mode), s=18, alpha=0.45, ax=ax)
+        except Exception:
+            sns.scatterplot(data=data, x=x, y=y, color=_main_point_color(color_mode), s=30, alpha=0.7, ax=ax)
+    elif kind == "regression" and data[x].nunique() > 1 and data[y].nunique() > 1 and len(data) >= 3:
+        sns.regplot(data=data, x=x, y=y, scatter_kws={"s": 30, "alpha": 0.65, "color": _main_point_color(color_mode)}, line_kws={"linewidth": 1.2, "color": _line_color(color_mode)}, ax=ax)
+    else:
+        sns.scatterplot(data=data, x=x, y=y, color=_main_point_color(color_mode), s=30, alpha=0.7, ax=ax)
+    sns.histplot(data[x].dropna(), kde=True, color=_main_point_color(color_mode), ax=ax_top)
+    sns.histplot(y=data[y].dropna(), kde=True, color=_main_point_color(color_mode), ax=ax_right)
+    ax_top.tick_params(axis="x", bottom=False, labelbottom=False)
+    ax_right.tick_params(axis="y", left=False, labelleft=False)
+    r = data[x].corr(data[y]) if len(data) >= 3 else np.nan
+    ax.set_xlabel(f"{x} ({metric}, kg)")
+    ax.set_ylabel(f"{y} ({metric}, kg)")
+    ax.set_title(f"{x} vs {y} - kg only" + (f" | r={r:.3f}" if pd.notna(r) else ""))
+    panel.ax = ax
+    panel.canvas.draw_idle()
+
+
+def plot_seaborn_tank_similarity(panel, tank_similarity: pd.DataFrame, raw_matrix: pd.DataFrame, top_tanks: int = 40, annotate: bool = False, color_mode: str = "Basic") -> None:
+    if not _seaborn_available_or_message(panel):
+        return
+    _set_seaborn_theme(color_mode)
+    if tank_similarity is None or tank_similarity.empty or "WasteSiteId" not in tank_similarity.columns:
+        panel.show_message("No tank similarity matrix")
+        return
+    data = tank_similarity.copy().set_index("WasteSiteId")
+    tanks = [str(t) for t in data.index.tolist()]
+    keep = [t for t in tanks if t in data.columns]
+    data = data.loc[keep, keep]
+    if raw_matrix is not None and not raw_matrix.empty and "WasteSiteId" in raw_matrix.columns:
+        raw = raw_matrix.set_index("WasteSiteId")
+        totals = raw.sum(axis=1).sort_values(ascending=False).head(int(top_tanks)).index.astype(str).tolist()
+        keep = [t for t in totals if t in data.index]
+        if len(keep) >= 2:
+            data = data.loc[keep, keep]
+    else:
+        data = data.iloc[:int(top_tanks), :int(top_tanks)]
+    n = len(data)
+    if n < 2:
+        panel.show_message("Need at least two tanks for tank similarity")
+        return
+    panel.figure.clear()
+    base_size = min(max(7, n * 0.23), 18)
+    panel.figure.set_size_inches(base_size, base_size, forward=True)
+    ax = panel.figure.add_subplot(111)
+    mask = np.triu(np.ones_like(data.to_numpy(dtype=float), dtype=bool), k=1)
+    sns.heatmap(
+        data, mask=mask, vmin=-1, vmax=1, center=0, cmap=_corr_cmap(color_mode), square=True,
+        linewidths=0.2 if n <= 50 else 0, annot=bool(annotate and n <= 20), fmt=".2f",
+        cbar_kws={"label": "Tank-to-tank correlation across selected kg elements"}, ax=ax,
+    )
+    ax.set_title(f"Tank similarity lower triangle - kg element vectors - top {n} tanks")
+    ax.tick_params(axis="x", rotation=90, labelsize=7)
+    ax.tick_params(axis="y", rotation=0, labelsize=7)
+    panel.ax = ax
+    panel.canvas.draw_idle()
+
+
+def plot_seaborn_tank_element_map(panel, raw_matrix: pd.DataFrame, elements: Sequence[str], top_tanks: int = 60, metric: str = "log10_plus1", color_mode: str = "Basic") -> None:
+    if not _seaborn_available_or_message(panel):
+        return
+    _set_seaborn_theme(color_mode)
+    if raw_matrix is None or raw_matrix.empty or "WasteSiteId" not in raw_matrix.columns:
+        panel.show_message("No raw kg matrix")
+        return
+    clean = [e for e in elements if e in raw_matrix.columns]
+    if not clean:
+        panel.show_message("No selected elements in raw matrix")
+        return
+    raw = raw_matrix[["WasteSiteId"] + clean].copy().set_index("WasteSiteId")
+    raw = raw.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    top_ids = raw.sum(axis=1).sort_values(ascending=False).head(int(top_tanks)).index.tolist()
+    raw = raw.loc[top_ids]
+    if metric == "fraction":
+        denom = raw.sum(axis=1).replace(0.0, np.nan)
+        data = raw.div(denom, axis=0)
+        label = "Fraction of selected kg inventory"
+    else:
+        data = np.log10(raw + 1.0)
+        label = "log10(inventory kg + 1)"
+    panel.figure.clear()
+    width = min(max(7, len(clean) * 0.5), 18)
+    height = min(max(6, len(raw) * 0.16), 18)
+    panel.figure.set_size_inches(width, height, forward=True)
+    ax = panel.figure.add_subplot(111)
+    sns.heatmap(data, cmap=_sequential_cmap(color_mode), cbar_kws={"label": label}, linewidths=0.0, ax=ax)
+    ax.set_title(f"Tank x selected element map - kg only - top {len(raw)} tanks")
+    ax.set_xlabel("Element")
+    ax.set_ylabel("Tank")
+    ax.tick_params(axis="x", rotation=90)
+    ax.tick_params(axis="y", rotation=0, labelsize=7)
+    panel.ax = ax
+    panel.canvas.draw_idle()
+
+
+def plot_seaborn_presence_patterns(panel, presence_matrix: pd.DataFrame, elements: Sequence[str], top_n: int = 30, color_mode: str = "Basic") -> None:
+    if not _seaborn_available_or_message(panel):
+        return
+    _set_seaborn_theme(color_mode)
+    if presence_matrix is None or presence_matrix.empty or "WasteSiteId" not in presence_matrix.columns:
+        panel.show_message("No presence matrix")
+        return
+    clean = [e for e in elements if e in presence_matrix.columns]
+    if len(clean) < 2:
+        panel.show_message("Need at least two elements")
+        return
+    df = presence_matrix[["WasteSiteId"] + clean].copy()
+    for e in clean:
+        df[e] = pd.to_numeric(df[e], errors="coerce").fillna(0).astype(int)
+    df["N_selected_elements_present"] = df[clean].sum(axis=1)
+    df["Combination"] = df[clean].apply(lambda row: "+".join([e for e, v in row.items() if int(v) > 0]) or "none", axis=1)
+    counts = df.groupby(["Combination", "N_selected_elements_present"], as_index=False).size().rename(columns={"size": "N_tanks"})
+    counts = counts[counts["Combination"] != "none"].sort_values("N_tanks", ascending=False).head(int(top_n))
+    if counts.empty:
+        panel.show_message("No non-empty presence patterns")
+        return
+    counts = counts.iloc[::-1]
+    panel.ax.clear()
+    panel.figure.set_size_inches(10, max(5, min(16, 0.32 * len(counts) + 2)), forward=True)
+    ax = panel.ax
+    sns.barplot(
+        data=counts, y="Combination", x="N_tanks", hue="N_selected_elements_present",
+        palette=(_sequential_cmap(color_mode) if _use_coherent_colors(color_mode) else None), dodge=False, ax=ax,
+    )
+    ax.set_xlabel("Number of tanks")
+    ax.set_ylabel("Element combination present in tank")
+    ax.set_title("Most common selected-element co-presence patterns - kg only")
+    ax.grid(True, axis="x", alpha=0.25)
+    ax.legend(title="N elements", fontsize=8)
+    panel.figure.tight_layout()
+    panel.canvas.draw_idle()
+
+
+def plot_seaborn_stats_dashboard(panel, element_stats: pd.DataFrame, pair_stats: pd.DataFrame, top_n: int = 20, color_mode: str = "Basic") -> None:
+    """4-panel dashboard: total-kg bars, abundance-vs-spread scatter,
+    r-vs-Jaccard scatter, top-12 preferred-association bars."""
+    if not _seaborn_available_or_message(panel):
+        return
+    _set_seaborn_theme(color_mode)
+    if element_stats is None or element_stats.empty:
+        panel.show_message("No element statistics")
+        return
+    elems = element_stats.sort_values("Total_inventory_kg", ascending=False).head(int(top_n)).copy()
+    pairs = pair_stats.sort_values("PreferredAssociationScore_proxy", ascending=False).head(int(top_n)).copy() if pair_stats is not None and not pair_stats.empty else pd.DataFrame()
+    panel.figure.clear()
+    panel.figure.set_size_inches(14, 10, forward=True)
+    gs = panel.figure.add_gridspec(2, 2, wspace=0.32, hspace=0.35)
+    ax1 = panel.figure.add_subplot(gs[0, 0])
+    ax2 = panel.figure.add_subplot(gs[0, 1])
+    ax3 = panel.figure.add_subplot(gs[1, 0])
+    ax4 = panel.figure.add_subplot(gs[1, 1])
+    if _use_coherent_colors(color_mode):
+        sns.barplot(data=elems, y="Element", x="Total_inventory_kg", hue="Element", palette=sns.color_palette("mako", n_colors=len(elems)), legend=False, ax=ax1, orient="h")
+    else:
+        sns.barplot(data=elems, y="Element", x="Total_inventory_kg", color="0.55", ax=ax1, orient="h")
+    ax1.set_xscale("log")
+    ax1.set_xlabel("Total inventory (kg, log scale)")
+    ax1.set_ylabel("Element")
+    ax1.set_title("Selected elements: total kg")
+    sns.scatterplot(data=elems, x="PresenceFraction_pct", y="Total_inventory_kg", size="Max_kg_in_one_tank", color=_main_point_color(color_mode), sizes=(30, 300), legend=False, ax=ax2)
+    ax2.set_yscale("log")
+    ax2.set_xlabel("Presence fraction across tanks (%)")
+    ax2.set_ylabel("Total inventory (kg)")
+    ax2.set_title("Abundance vs spread")
+    if not pairs.empty:
+        p = pairs.copy()
+        p["Pair"] = p["Element_A"].astype(str) + "-" + p["Element_B"].astype(str)
+        sns.scatterplot(data=p, x="Correlation_r", y="Jaccard_presence", size="N_both_present", hue="PreferredAssociationScore_proxy", palette=(_sequential_cmap(color_mode) if _use_coherent_colors(color_mode) else None), sizes=(30, 250), ax=ax3)
+        ax3.set_xlim(-1.05, 1.05)
+        ax3.set_xlabel("Correlation r")
+        ax3.set_ylabel("Jaccard co-presence")
+        ax3.set_title("Pair associations")
+        p2 = p.sort_values("PreferredAssociationScore_proxy", ascending=False).head(12).iloc[::-1]
+        if _use_coherent_colors(color_mode):
+            sns.barplot(data=p2, y="Pair", x="PreferredAssociationScore_proxy", hue="Pair", palette=sns.color_palette("flare", n_colors=len(p2)), legend=False, ax=ax4, orient="h")
+        else:
+            sns.barplot(data=p2, y="Pair", x="PreferredAssociationScore_proxy", color="0.55", ax=ax4, orient="h")
+        ax4.set_xlabel("Preferred association score proxy")
+        ax4.set_ylabel("Pair")
+        ax4.set_title("Top preferred associations")
+    else:
+        ax3.text(0.5, 0.5, "No pair stats", ha="center", va="center", transform=ax3.transAxes)
+        ax4.text(0.5, 0.5, "No pair stats", ha="center", va="center", transform=ax4.transAxes)
+    panel.ax = ax1
     panel.canvas.draw_idle()
