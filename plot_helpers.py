@@ -11,6 +11,8 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
+from matrix_science import log10_safe
+
 ACCENT_COLOR = "#c1502e"
 BASE_COLOR = "0.55"
 
@@ -106,6 +108,52 @@ def plot_barh(
         ax.set_xscale("log")
     ax.grid(True, axis="x", alpha=0.25)
     panel.figure.tight_layout()
+    panel.canvas.draw_idle()
+
+
+def plot_heatmap(panel, wide: pd.DataFrame, unit: str, mode: str, title: str) -> None:
+    """Tank x element inventory heatmap. Rebuilds the panel's axes (rather
+    than clearing in place) because figure size must scale with the number
+    of tanks/elements to stay readable -- up to 177 tanks in this dataset."""
+    if wide is None or wide.empty or "WasteSiteId" not in wide:
+        panel.show_message("No heatmap data")
+        return
+    data = wide.copy()
+    labels_y = data["WasteSiteId"].astype(str).tolist()
+    elements = [c for c in data.columns if c != "WasteSiteId"]
+    arr = data[elements].to_numpy(dtype=float)
+    if mode == "log10_inventory":
+        arr = log10_safe(arr)
+        cbar_label = f"log10 inventory ({unit})"
+    elif mode == "fraction":
+        denom = np.nansum(arr, axis=1, keepdims=True)
+        arr = np.divide(arr, denom, where=denom > 0)
+        cbar_label = f"fraction of displayed {unit} inventory"
+    else:
+        cbar_label = f"inventory ({unit})"
+
+    panel.figure.clear()
+    height = min(max(5, len(labels_y) * 0.10), 18)
+    width = min(max(8, len(elements) * 0.25), 18)
+    panel.figure.set_size_inches(width, height, forward=True)
+    ax = panel.figure.add_subplot(111)
+    im = ax.imshow(arr, aspect="auto", interpolation="nearest")
+    ax.set_xticks(np.arange(len(elements)))
+    ax.set_xticklabels(elements, rotation=90)
+    if len(labels_y) <= 80:
+        ax.set_yticks(np.arange(len(labels_y)))
+        ax.set_yticklabels(labels_y, fontsize=7)
+    else:
+        step = max(1, len(labels_y) // 40)
+        yticks = np.arange(0, len(labels_y), step)
+        ax.set_yticks(yticks)
+        ax.set_yticklabels([labels_y[i] for i in yticks], fontsize=7)
+    ax.set_xlabel("Element")
+    ax.set_ylabel("Tank")
+    ax.set_title(title)
+    cbar = panel.figure.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
+    cbar.set_label(cbar_label)
+    panel.ax = ax
     panel.canvas.draw_idle()
 
 

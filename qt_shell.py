@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from data_model import HanfordDataset
 from qt_explorer import ExplorerPage
+from qt_heatmap import HeatmapPage
 from qt_help import ABOUT_HTML, APP_NAME, APP_VERSION, HelpDialog, asset_path
 from qt_overview import OverviewPage
 from qt_tank_attributes import TankAttributesPage
@@ -128,7 +129,7 @@ class EmberMainWindow(QMainWindow):
         self.stack.addWidget(self.tank_attrs_page)
         self.tank_explorer_page = TankExplorerPage(self)
         self.stack.addWidget(self.tank_explorer_page)
-        self.heatmaps_page = PlaceholderPage(NAV_HEATMAPS)
+        self.heatmaps_page = HeatmapPage(self)
         self.stack.addWidget(self.heatmaps_page)
         self.correlations_page = PlaceholderPage(NAV_CORRELATIONS)
         self.stack.addWidget(self.correlations_page)

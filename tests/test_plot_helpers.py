@@ -145,6 +145,47 @@ class TestPlotBarh:
         assert panel.canvas.draw_idle_called
 
 
+class TestPlotHeatmap:
+    def test_missing_wastesiteid_column_shows_message(self):
+        panel = FakePanel()
+        ph.plot_heatmap(panel, pd.DataFrame({"x": [1]}), "kg", "inventory", "t")
+        assert panel.messages == ["No heatmap data"]
+
+    def test_empty_dataframe_shows_message(self):
+        panel = FakePanel()
+        ph.plot_heatmap(panel, pd.DataFrame({"WasteSiteId": []}), "kg", "inventory", "t")
+        assert panel.messages == ["No heatmap data"]
+
+    def test_renders_with_real_plot_widget(self, qtbot):
+        # figure.clear()/add_subplot()/colorbar() need a real Figure, not
+        # the FakePanel stand-in used for the early-return checks above.
+        from qt_widgets import PlotWidget
+        panel = PlotWidget()
+        qtbot.addWidget(panel)
+        wide = pd.DataFrame({"WasteSiteId": ["241-A-101", "241-AN-104"], "Na": [0.0, 500.0], "Fe": [60.0, 0.0]})
+        ph.plot_heatmap(panel, wide, "kg", "log10_inventory", "t")
+        qtbot.wait(20)
+        assert panel.ax.get_title() == "t"
+        assert [t.get_text() for t in panel.ax.get_xticklabels()] == ["Na", "Fe"]
+
+    def test_fraction_mode_renders(self, qtbot):
+        from qt_widgets import PlotWidget
+        panel = PlotWidget()
+        qtbot.addWidget(panel)
+        wide = pd.DataFrame({"WasteSiteId": ["241-A-101"], "Na": [500.0], "Fe": [60.0]})
+        ph.plot_heatmap(panel, wide, "kg", "fraction", "t")
+        qtbot.wait(20)
+
+    def test_many_tanks_thins_y_labels(self, qtbot):
+        from qt_widgets import PlotWidget
+        panel = PlotWidget()
+        qtbot.addWidget(panel)
+        wide = pd.DataFrame({"WasteSiteId": [f"T{i}" for i in range(90)], "Na": list(range(90))})
+        ph.plot_heatmap(panel, wide, "kg", "inventory", "t")
+        qtbot.wait(20)
+        assert len(panel.ax.get_yticklabels()) < 90
+
+
 class TestPlotGroupedTankProfile:
     def test_missing_columns_shows_message(self):
         panel = FakePanel()
