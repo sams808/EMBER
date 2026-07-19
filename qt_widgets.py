@@ -83,7 +83,7 @@ class PlotWidget(QWidget):
         fn(*args, **kwargs)
         self.canvas.draw_idle()
 
-    def set_figure_size_inches(self, width: float, height: float) -> None:
+    def set_figure_size_inches(self, width: float, height: float, *, cap_to_visible: bool = True) -> None:
         """Resize the figure AND the canvas widget to match. Figure.set_size_
         inches(..., forward=True) is a no-op for a canvas embedded directly
         (as this one is, not via pyplot): forward=True only resizes anything
@@ -91,9 +91,32 @@ class PlotWidget(QWidget):
         always None here -- so callers that want an on-screen size change
         (e.g. a plot with more rows needing a taller figure to keep labels
         legible) must go through this method instead of calling
-        figure.set_size_inches() directly."""
+        figure.set_size_inches() directly.
+
+        A plain canvas.resize() is only advisory -- inside a QSplitter, any
+        later relayout (e.g. a sibling table's sizeHint changing after
+        set_dataframe() with a different row count) reasserts the splitter's
+        own geometry and silently undoes it. Setting the canvas's minimum
+        size makes the request an actual constraint the layout must respect
+        on every subsequent pass, not just a one-off nudge -- but an
+        unbounded minimum size is its own hazard (there's no scroll area
+        anywhere in this app, so a wide/tall enough request would force the
+        splitter to either overflow the window or crush its sibling panel
+        illegibly thin). By default this clamps to available_content_
+        width/height_inches() first so growth always stays inside what's
+        actually visible; pass cap_to_visible=False to request an exact
+        size regardless (e.g. export-at-fixed-size code paths)."""
+        if cap_to_visible:
+            max_w = self.available_content_width_inches()
+            max_h = self.available_content_height_inches()
+            if max_w is not None:
+                width = min(width, max_w)
+            if max_h is not None:
+                height = min(height, max_h)
         self.figure.set_size_inches(width, height)
-        self.canvas.resize(*self.canvas.get_width_height())
+        w_px, h_px = self.canvas.get_width_height()
+        self.canvas.setMinimumSize(w_px, h_px)
+        self.canvas.resize(w_px, h_px)
 
     def available_content_height_inches(self) -> Optional[float]:
         """Approximate vertical room left for the canvas within this
@@ -108,6 +131,41 @@ class PlotWidget(QWidget):
             return None
         chrome_px = self.toolbar.height() + 24  # ~one line for coords_label
         return max(self.height() - chrome_px, 0) / self.figure.dpi
+
+    def available_content_width_inches(self, reserve_px: int = 280) -> Optional[float]:
+        """Approximate horizontal room available for this canvas without
+        forcing the enclosing window wider than it already is. Unlike
+        height (this widget is already stretched to fill available
+        vertical space by its container), width inside a horizontal
+        QSplitter is actively managed by the splitter itself and can't be
+        read off self.width() -- that's just whatever the splitter
+        currently allocates, not a ceiling. The right ceiling is the
+        top-level window's current width, minus a reserve for the sibling
+        panel (typically a data table) and the splitter handle -- None if
+        the widget isn't shown yet, same reasoning as the height version."""
+        if not self.isVisible():
+            return None
+        top = self.window()
+        if top is None or not top.isVisible():
+            return None
+        return max(top.width() - reserve_px, 0) / self.figure.dpi
+
+    def cap_square_size_inches(self, ideal: float) -> float:
+        """For a caller about to request equal (or near-equal, e.g. plus a
+        small fixed margin for a colorbar/marginal bars) width and height --
+        a `seaborn square=True` heatmap grid, a PCA/network scatter, etc.:
+        capping each axis independently after the fact wastes whichever
+        axis has more slack, since matplotlib centers a square plot within
+        the smaller of the two. Returns the largest size, at most `ideal`,
+        that fits within both available_content_width/height_inches()."""
+        caps = [ideal]
+        avail_w = self.available_content_width_inches()
+        if avail_w is not None:
+            caps.append(avail_w)
+        avail_h = self.available_content_height_inches()
+        if avail_h is not None:
+            caps.append(avail_h)
+        return min(caps)
 
     def clear(self, title: str = "") -> None:
         self.ax.clear()

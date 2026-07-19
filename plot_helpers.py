@@ -122,13 +122,10 @@ def plot_barh(
     # every label into the same vertical space regardless of top_n, which
     # is what makes a 40-bar chart's y-tick labels overlap into
     # illegibility even though the panel has plenty of unused space below.
-    # Capped at whatever's actually visible: there's no scroll area around
-    # the canvas, so a figure taller than the panel doesn't scroll into
-    # view, it silently clips instead.
+    # set_figure_size_inches() caps this at what's actually visible on its
+    # own (there's no scroll area around the canvas), so no manual cap
+    # needed here.
     height = min(max(4.5, len(pdf) * 0.26), 16.0)
-    available = panel.available_content_height_inches()
-    if available is not None and available >= 3.0:
-        height = min(height, available)
     width = panel.figure.get_size_inches()[0]
     panel.set_figure_size_inches(width, height)
 
@@ -191,6 +188,7 @@ def plot_heatmap(panel, wide: pd.DataFrame, unit: str, mode: str, title: str) ->
     cbar = panel.figure.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
     cbar.set_label(cbar_label)
     panel.ax = ax
+    panel.figure.tight_layout()
     panel.canvas.draw_idle()
 
 
@@ -318,7 +316,7 @@ def plot_correlation_heatmap(
         with_projection = False
 
     panel.figure.clear()
-    base_size = min(max(6.5, n * 0.34), 19.0)
+    base_size = panel.cap_square_size_inches(min(max(6.5, n * 0.34), 19.0))
 
     if use_seaborn and with_projection:
         proj_raw = _aligned_projection_values(elements, totals)
@@ -346,7 +344,11 @@ def plot_correlation_heatmap(
             annot=bool(annotate and n <= 25), fmt=".2f",
             cbar_kws={"label": "Correlation r", "shrink": 0.75}, ax=ax,
         )
-        ax.set_title(title)
+        # suptitle, not ax.set_title(): ax sits directly below ax_top with
+        # hspace=0.05 (no room reserved between rows for a title), so an
+        # axes-level title renders on top of ax_top's bars instead of above
+        # them. suptitle sits above the whole figure, clear of ax_top.
+        panel.figure.suptitle(title)
         ax.set_xlabel("Element")
         ax.set_ylabel("Element")
         ax.tick_params(axis="x", rotation=90, labelsize=8 if n <= 55 else 6)
@@ -559,7 +561,7 @@ def plot_seaborn_lower_triangle_matrix(
     )
     projection_color = _projection_bar_color(color_mode)
     panel.figure.clear()
-    base_size = min(max(6.5, n * 0.34), 19.0)
+    base_size = panel.cap_square_size_inches(min(max(6.5, n * 0.34), 19.0))
     if projections:
         total_map: Dict[str, float] = {}
         if totals is not None and not totals.empty and "Element" in totals.columns and "Total_inventory_kg" in totals.columns:
@@ -587,7 +589,14 @@ def plot_seaborn_lower_triangle_matrix(
         square=True, linewidths=0.4 if n <= 45 else 0.0, linecolor="white",
         annot=bool(annotate and n <= 25), fmt=".2f", cbar_kws={"label": cbar_label, "shrink": 0.75}, ax=ax,
     )
-    ax.set_title(title)
+    if projections:
+        # suptitle, not ax.set_title(): ax sits directly below ax_top with
+        # hspace=0.05 (no room reserved between rows for a title), so an
+        # axes-level title renders on top of ax_top's bars instead of above
+        # them. suptitle sits above the whole figure, clear of ax_top.
+        panel.figure.suptitle(title)
+    else:
+        ax.set_title(title)
     ax.set_xlabel("Element")
     ax.set_ylabel("Element")
     ax.tick_params(axis="x", rotation=90, labelsize=8 if n <= 55 else 6)
@@ -677,7 +686,7 @@ def plot_seaborn_pair_matrix(
         panel.show_message("No finite values for pair matrix")
         return
     n = len(clean)
-    size = min(max(2.0 * n, 7), 18)
+    size = panel.cap_square_size_inches(min(max(2.0 * n, 7), 18))
     panel.figure.clear()
     panel.set_figure_size_inches(size, size)
     axes = panel.figure.subplots(n, n, squeeze=False)
@@ -805,7 +814,7 @@ def plot_seaborn_tank_similarity(panel, tank_similarity: pd.DataFrame, raw_matri
         panel.show_message("Need at least two tanks for tank similarity")
         return
     panel.figure.clear()
-    base_size = min(max(7, n * 0.23), 18)
+    base_size = panel.cap_square_size_inches(min(max(7, n * 0.23), 18))
     panel.set_figure_size_inches(base_size, base_size)
     ax = panel.figure.add_subplot(111)
     mask = np.triu(np.ones_like(data.to_numpy(dtype=float), dtype=bool), k=1)
@@ -1028,6 +1037,15 @@ def plot_partial_correlation_comparison(panel, partial_df: pd.DataFrame, raw_df:
     cmap = _corr_cmap(color_mode)
     panel.figure.clear()
     base_size = min(max(5.5, n * 0.32), 14.0)
+    # Two side-by-side square heatmaps sharing base_size: cap it against
+    # the width formula's own 2x+1.2 factor, not the raw available width,
+    # or the pair would overflow even though the figure fits the ceiling.
+    avail_w = panel.available_content_width_inches()
+    avail_h = panel.available_content_height_inches()
+    if avail_w is not None:
+        base_size = min(base_size, (avail_w - 1.2) / 2)
+    if avail_h is not None:
+        base_size = min(base_size, avail_h - 1.0)
     panel.set_figure_size_inches(base_size * 2 + 1.2, base_size + 1.0)
     ax1 = panel.figure.add_subplot(1, 2, 1)
     ax2 = panel.figure.add_subplot(1, 2, 2)

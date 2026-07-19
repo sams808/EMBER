@@ -35,14 +35,11 @@ def _plot_top_elements(panel: PlotWidget, df: pd.DataFrame, unit_label: str) -> 
     # every label into the same vertical space regardless of Top N, which
     # is what makes a 40-bar chart's y-tick labels overlap into
     # illegibility even though the panel has plenty of unused space below.
-    # Capped at whatever's actually visible: there's no scroll area around
-    # the canvas, so a figure taller than the panel doesn't scroll into
-    # view, it silently clips instead.
+    # set_figure_size_inches() caps this at what's actually visible on its
+    # own (there's no scroll area around the canvas), so no manual cap
+    # needed here.
     n_bars = int(positive.sum())
     height = min(max(4.5, n_bars * 0.26), 16.0)
-    available = panel.available_content_height_inches()
-    if available is not None and available >= 3.0:
-        height = min(height, available)
     width = panel.figure.get_size_inches()[0]
     panel.set_figure_size_inches(width, height)
     panel.ax.barh(np.array(labels)[positive], values[positive], color="#c1502e")
