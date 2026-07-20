@@ -125,12 +125,11 @@ def plot_barh(
     # set_figure_size_inches() caps this at what's actually visible on its
     # own (there's no scroll area around the canvas), so no manual cap
     # needed here.
+    ax = panel.reset_axes()
     height = min(max(4.5, len(pdf) * 0.26), 16.0)
     width = panel.figure.get_size_inches()[0]
     panel.set_figure_size_inches(width, height)
 
-    panel.ax.clear()
-    ax = panel.ax
     colors = color_by_highlight(
         pdf["_plot_label"].astype(str).tolist(), highlighted_label,
         base_labels=pdf[label_col].astype(str).tolist(),
@@ -220,8 +219,7 @@ def plot_grouped_tank_profile(panel, data: pd.DataFrame, value_col: str, title: 
     pivot = pdf.pivot_table(index="_plot_element", columns="WasteSiteId", values="_plot_value", aggfunc="sum", fill_value=0.0)
     pivot = pivot.loc[pivot.sum(axis=1).sort_values(ascending=True).index]
 
-    panel.ax.clear()
-    ax = panel.ax
+    ax = panel.reset_axes()
     pivot.plot(kind="barh", ax=ax, width=0.85)
     ax.set_xlabel(value_col)
     ax.set_ylabel("Element" if ("Units" not in pdf or pdf["Units"].nunique() <= 1) else "Element [unit]")
@@ -242,8 +240,7 @@ def plot_correlation_scan(panel, data: pd.DataFrame, target: str, top_n: int = 3
         panel.show_message("No valid correlations")
         return
     pdf = pdf.iloc[::-1]
-    panel.ax.clear()
-    ax = panel.ax
+    ax = panel.reset_axes()
     colors = ["tab:blue" if v >= 0 else "tab:red" for v in pdf["Correlation_r"]]
     labels = pdf["PartnerElement"].astype(str) + " (n=" + pdf["N_overlap_nonzero_tanks"].astype(str) + ")"
     ax.barh(labels, pdf["Correlation_r"].astype(float), color=colors, alpha=0.75)
@@ -420,8 +417,7 @@ def plot_pair_scatter(panel, matrix: pd.DataFrame, elements: Sequence[str], unit
     pdf[a] = numeric_plot_series(pdf[a])
     pdf[b] = numeric_plot_series(pdf[b])
     pdf = pdf.dropna(subset=[a, b])
-    panel.ax.clear()
-    ax = panel.ax
+    ax = panel.reset_axes()
     if len(clean) >= 3:
         c = clean[2]
         pdf[c] = numeric_plot_series(pdf[c]).fillna(0.0)
@@ -454,8 +450,7 @@ def plot_target_vs_total(panel, data: pd.DataFrame, title: str) -> None:
     if pdf.empty:
         panel.show_message("No positive values to plot")
         return
-    panel.ax.clear()
-    ax = panel.ax
+    ax = panel.reset_axes()
     for unit in pd.unique(pdf["Units"]):
         sub = pdf[pdf["Units"] == unit]
         ax.scatter(sub["_x_total"], sub["_y_target"], label=str(unit), alpha=0.75, s=35)
@@ -641,9 +636,8 @@ def plot_seaborn_top_associations(panel, pair_stats: pd.DataFrame, top_n: int = 
         return
     pdf["Pair"] = pdf["Element_A"].astype(str) + "-" + pdf["Element_B"].astype(str) + "  (n=" + pdf["N_both_present"].astype(str) + ")"
     pdf = pdf.iloc[::-1]
-    panel.ax.clear()
+    ax = panel.reset_axes()
     panel.set_figure_size_inches(9, max(5, min(16, 0.32 * len(pdf) + 2)))
-    ax = panel.ax
     palette_name = _pair_palette_name(mode, color_mode)
     if palette_name:
         try:
@@ -889,9 +883,8 @@ def plot_seaborn_presence_patterns(panel, presence_matrix: pd.DataFrame, element
         panel.show_message("No non-empty presence patterns")
         return
     counts = counts.iloc[::-1]
-    panel.ax.clear()
+    ax = panel.reset_axes()
     panel.set_figure_size_inches(10, max(5, min(16, 0.32 * len(counts) + 2)))
-    ax = panel.ax
     sns.barplot(
         data=counts, y="Combination", x="N_tanks", hue="N_selected_elements_present",
         palette=(_sequential_cmap(color_mode) if _use_coherent_colors(color_mode) else None), dodge=False, ax=ax,
@@ -1137,8 +1130,7 @@ def plot_vitrification_burden(panel, data: pd.DataFrame, title: str = "Vitrifica
     if pdf.empty:
         panel.show_message("No positive tank inventory")
         return
-    panel.ax.clear()
-    ax = panel.ax
+    ax = panel.reset_axes()
     size = 40 + 500 * pdf["frac_glass_former_or_intermediate"].clip(lower=0, upper=1)
     sc = ax.scatter(
         pdf["Total_kg_inventory"].clip(lower=1e-30), pdf["Total_Ci_inventory"].clip(lower=1e-30),
@@ -1166,8 +1158,7 @@ def plot_candidate_scores(panel, data: pd.DataFrame, score_col: str = "User_sear
     if pdf.empty:
         panel.show_message("No candidate scores to plot")
         return
-    panel.ax.clear()
-    ax = panel.ax
+    ax = panel.reset_axes()
     ax.barh(pdf["WasteSiteId"].astype(str), pdf["_score"].astype(float), color=BASE_COLOR)
     ax.set_xlabel(f"{score_col} (dimensionless proxy score)")
     ax.set_ylabel("Tank")
@@ -1187,8 +1178,7 @@ def plot_blend_scores(panel, data: pd.DataFrame, top_n: int = 30) -> None:
     if pdf.empty:
         panel.show_message("No blend scores to plot")
         return
-    panel.ax.clear()
-    ax = panel.ax
+    ax = panel.reset_axes()
     ax.barh(pdf["PartnerTank"].astype(str), pdf["_score"].astype(float), color=BASE_COLOR)
     ax.set_xlabel("Blend complement score (dimensionless proxy)")
     ax.set_ylabel("Partner tank")

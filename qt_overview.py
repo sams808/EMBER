@@ -20,7 +20,7 @@ from qt_widgets import DataFrameTableView, PlotWidget
 
 
 def _plot_top_elements(panel: PlotWidget, df: pd.DataFrame, unit_label: str) -> None:
-    panel.ax.clear()
+    panel.reset_axes()
     if df.empty:
         panel.show_message("No data for this unit yet.")
         return

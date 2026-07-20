@@ -18,6 +18,10 @@ class FakePanel:
     def show_message(self, message):
         self.messages.append(message)
 
+    def reset_axes(self):
+        self.ax.clear()
+        return self.ax
+
 
 class _FakeAx:
     def __init__(self):

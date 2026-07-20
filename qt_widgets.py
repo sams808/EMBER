@@ -40,6 +40,7 @@ class PlotWidget(QWidget):
     def __init__(self, parent: Optional[QWidget] = None, figsize=(6.0, 4.5), dpi: int = 100,
                  debounce_ms: int = 120):
         super().__init__(parent)
+        self._default_figsize = figsize
         self.figure = Figure(figsize=figsize, dpi=dpi)
         self.ax = self.figure.add_subplot(111)
         self.canvas = FigureCanvasQTAgg(self.figure)
@@ -170,8 +171,27 @@ class PlotWidget(QWidget):
             caps.append(avail_h)
         return min(caps)
 
+    def reset_axes(self):
+        """Full reset before drawing a new plot into this panel -- clears
+        the WHOLE figure, not just the main axes, and restores the default
+        figure size. Plain ax.clear() only empties the current self.ax; it
+        can't reach sibling artists a *previous* render on this same panel
+        may have added -- a colorbar (matplotlib gives it its own Axes,
+        separate from the plot's main axes), marginal-bar axes from a
+        gridspec layout -- so those stayed stuck on screen, along with
+        whatever oversized/undersized figure size that previous render left
+        behind, if the next plot only cleared self.ax. Callers that need a
+        bigger/differently-shaped figure (a heatmap, a gridspec layout) call
+        set_figure_size_inches()/add_gridspec() themselves right after this,
+        same as before -- this just guarantees they start from a clean
+        single-axes figure rather than whatever was drawn here last."""
+        self.figure.clear()
+        self.ax = self.figure.add_subplot(111)
+        self.set_figure_size_inches(*self._default_figsize)
+        return self.ax
+
     def clear(self, title: str = "") -> None:
-        self.ax.clear()
+        self.reset_axes()
         self.ax.grid(alpha=0.25)
         if title:
             self.ax.set_title(title)
@@ -180,7 +200,7 @@ class PlotWidget(QWidget):
     def show_message(self, message: str) -> None:
         """Blank the plot and show a centered message (e.g. "no data",
         "seaborn not installed") instead of a stale or empty axes."""
-        self.ax.clear()
+        self.reset_axes()
         self.ax.axis("off")
         self.ax.text(0.5, 0.5, message, ha="center", va="center", wrap=True,
                       transform=self.ax.transAxes, fontsize=11, color="0.4")
