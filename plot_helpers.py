@@ -495,7 +495,7 @@ def plot_target_vs_total(panel, data: pd.DataFrame, title: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# kg Association Workbench (M7): coherent-colors palette + 17 plot types
+# kg Association Workbench (M7): coherent-colors palette + 18 plot types
 # (8 functions, several parameterized by a `kind`/`mode` argument).
 # ---------------------------------------------------------------------------
 
@@ -893,6 +893,85 @@ def plot_seaborn_tank_element_map(panel, raw_matrix: pd.DataFrame, elements: Seq
     ax.tick_params(axis="x", rotation=90)
     ax.tick_params(axis="y", rotation=0, labelsize=7)
     panel.ax = ax
+    panel.canvas.draw_idle()
+
+
+@composable
+def plot_tank_element_bars(
+    panel, raw_matrix: pd.DataFrame, elements: Sequence[str], *, top_n: int = 30,
+    mode: str = "Stacked", sort_by: str = "Total (desc)", log_scale: bool = False,
+    color_mode: str = "Basic",
+) -> None:
+    """Per-tank kg inventory for N selected elements as horizontal bars --
+    Stacked (each tank's bar split into one segment per element, total
+    length = total inventory -- the classic publication summary-figure
+    shape) or Grouped (one bar per element per tank, side by side, for
+    direct magnitude comparison instead of a cumulative total). kg only,
+    same reasoning as the rest of this workbench: mixing kg and Ci on one
+    bar length would be physically meaningless."""
+    clean = [e for e in elements if e in raw_matrix.columns] if raw_matrix is not None else []
+    if raw_matrix is None or raw_matrix.empty or not clean:
+        panel.show_message("No selected elements in raw kg matrix")
+        return
+    df = raw_matrix[["WasteSiteId"] + clean].copy()
+    for e in clean:
+        df[e] = pd.to_numeric(df[e], errors="coerce").fillna(0.0)
+    df["_total"] = df[clean].sum(axis=1)
+    df = df[df["_total"] > 0]
+    if df.empty:
+        panel.show_message("No positive inventory for the selected elements")
+        return
+
+    sort_key = str(sort_by or "Total (desc)").lower()
+    if sort_key.startswith("total (desc"):
+        df = df.sort_values("_total", ascending=False)
+    elif sort_key.startswith("total (asc"):
+        df = df.sort_values("_total", ascending=True)
+    else:
+        df = df.sort_values("WasteSiteId", ascending=True)
+    df = df.head(int(top_n))
+    df = df.iloc[::-1]  # barh draws bottom-to-top; reverse for natural reading order top-to-bottom
+
+    ax = panel.reset_axes()
+    height = min(max(4.5, len(df) * 0.28), 16.0)
+    width = panel.figure.get_size_inches()[0]
+    panel.set_figure_size_inches(width, height)
+
+    labels = make_unique_plot_labels(df, "WasteSiteId")
+    y = np.arange(len(df))
+    cmap = matplotlib.colormaps.get_cmap(_sequential_cmap(color_mode))
+    n = len(clean)
+    colors = [cmap(0.85 - 0.6 * (i / max(n - 1, 1))) for i in range(n)]
+
+    is_stacked = str(mode or "Stacked").strip().lower().startswith("stack")
+    if is_stacked:
+        left = np.zeros(len(df))
+        for e, color in zip(clean, colors):
+            vals = df[e].to_numpy(dtype=float)
+            ax.barh(y, vals, left=left, height=0.75, color=color, label=e)
+            left += vals
+        if log_scale:
+            # Not blocked, but a log-scaled x-axis makes stacked segment
+            # lengths visually non-additive -- Grouped is the honest choice
+            # for a log comparison; this is left available for whoever
+            # wants it anyway (e.g. one dominant element vs the rest).
+            ax.set_xscale("log")
+    else:
+        bar_h = 0.8 / max(n, 1)
+        for i, (e, color) in enumerate(zip(clean, colors)):
+            offset = (i - (n - 1) / 2) * bar_h
+            ax.barh(y + offset, df[e].to_numpy(dtype=float), height=bar_h * 0.9, color=color, label=e)
+        if log_scale:
+            ax.set_xscale("log")
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels, fontsize=8 if len(df) <= 45 else 6)
+    ax.set_xlabel(f"Inventory ({', '.join(clean)}, kg)" if n <= 4 else f"Inventory ({n} elements, kg)")
+    ax.set_ylabel("Tank")
+    ax.set_title(f"Tank inventory by element - kg only ({'stacked' if is_stacked else 'grouped'})")
+    ax.grid(True, axis="x", alpha=0.25)
+    ax.legend(title="Element", fontsize=8, loc="lower right")
+    panel.figure.tight_layout()
     panel.canvas.draw_idle()
 
 

@@ -1,7 +1,7 @@
 """
 qt_correlations_workbench.py — the "Association Workbench (kg)" Correlations
 sub-tab: kg-only element association screening for vitrification/blending
-(Jaccard co-presence, preferred-association scoring, 17 plot types, coherent
+(Jaccard co-presence, preferred-association scoring, 18 plot types, coherent
 colors, skip-elements). Ported from the old app's SeabornCorrelationTab.
 """
 from __future__ import annotations
@@ -24,12 +24,15 @@ from qt_widgets import DataFrameTableView, PlotWidget
 METRICS = ["log10_plus1", "log10_inventory", "fraction", "inventory", "presence"]
 METHODS = ["pearson", "spearman", "kendall"]
 COLOR_MODES = ["Basic", "Coherent colors"]
+BAR_MODES = ["Stacked", "Grouped"]
+BAR_SORT_MODES = ["Total (desc)", "Total (asc)", "Tank ID (A-Z)"]
 PLOT_TYPES = [
     "Corr heatmap lower triangle", "Corr heatmap + total kg projections", "Jaccard co-presence heatmap",
     "Top preferred associations", "Top positive correlations", "Top negative correlations", "Top Jaccard co-presence",
     "Pair matrix regression", "Pair matrix scatter", "Pair matrix KDE",
     "Joint regression first two", "Joint scatter first two", "Joint KDE first two",
-    "Tank similarity heatmap", "Tank x element heatmap", "Presence pattern bars", "Stats dashboard",
+    "Tank similarity heatmap", "Tank x element heatmap", "Tank inventory bars",
+    "Presence pattern bars", "Stats dashboard",
 ]
 _TABLE_KEY_BY_TITLE = {
     "Element stats": "element_stats", "Pair stats": "pair_stats", "Metric matrix": "metric_matrix",
@@ -148,6 +151,31 @@ class WorkbenchTab(QWidget):
         row3.addStretch(1)
         root.addLayout(row3)
 
+        row4 = QHBoxLayout()
+        row4.addWidget(QLabel("Tank inventory bars:"))
+        row4.addWidget(QLabel("Mode"))
+        self.bar_mode_combo = QComboBox()
+        self.bar_mode_combo.addItems(BAR_MODES)
+        self.bar_mode_combo.setToolTip(
+            "Stacked: each tank's bar splits into one segment per selected element (total length = total "
+            "inventory) -- the classic publication summary shape.\n"
+            "Grouped: one bar per element per tank, side by side -- for comparing magnitudes directly "
+            "instead of a cumulative total."
+        )
+        row4.addWidget(self.bar_mode_combo)
+        row4.addWidget(QLabel("Sort tanks"))
+        self.bar_sort_combo = QComboBox()
+        self.bar_sort_combo.addItems(BAR_SORT_MODES)
+        row4.addWidget(self.bar_sort_combo)
+        self.bar_log_check = QCheckBox("log scale")
+        self.bar_log_check.setToolTip("Applies to Grouped mode; a log-scaled axis makes Stacked segment lengths non-additive.")
+        row4.addWidget(self.bar_log_check)
+        bar_hint = QLabel("Uses \"top tanks\" (row above) and the selected elements/color mode.")
+        bar_hint.setObjectName("SectionNote")
+        row4.addWidget(bar_hint)
+        row4.addStretch(1)
+        root.addLayout(row4)
+
         splitter = QSplitter()
         root.addWidget(splitter, 1)
 
@@ -263,6 +291,11 @@ class WorkbenchTab(QWidget):
             ph.plot_seaborn_tank_similarity(self.plot, tank_similarity, raw_matrix, top_tanks=top_tanks, annotate=annotate, color_mode=color_mode)
         elif ptype == "Tank x element heatmap":
             ph.plot_seaborn_tank_element_map(self.plot, raw_matrix, elements, top_tanks=top_tanks, metric=metric, color_mode=color_mode)
+        elif ptype == "Tank inventory bars":
+            ph.plot_tank_element_bars(
+                self.plot, raw_matrix, elements, top_n=top_tanks, mode=self.bar_mode_combo.currentText(),
+                sort_by=self.bar_sort_combo.currentText(), log_scale=self.bar_log_check.isChecked(), color_mode=color_mode,
+            )
         elif ptype == "Presence pattern bars":
             ph.plot_seaborn_presence_patterns(self.plot, presence_matrix, elements, top_n=top_pairs, color_mode=color_mode)
         elif ptype == "Stats dashboard":

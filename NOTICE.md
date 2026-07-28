@@ -301,10 +301,24 @@ have *both*), and a `PreferredAssociationScore_proxy`
 are both positively correlated *and* frequently found together, and never
 rewards a merely-negative correlation (a real absence relationship is
 still informative, but it's not what this particular score is designed to
-surface). 17 plot types (heatmaps, top-association bar charts, pair
+surface). 18 plot types (heatmaps, top-association bar charts, pair
 scatter matrices, tank-similarity and tank×element maps, presence-pattern
-plots, and a combined stats dashboard), with a Basic/Coherent-colors theme
-toggle for consistent color families across all of them.
+plots, a combined stats dashboard, and **Tank inventory bars**), with a
+Basic/Coherent-colors theme toggle for consistent color families across
+all of them.
+
+**Tank inventory bars** — the publication-figure workhorse: pick any N
+elements (the same selection used everywhere else in this workbench), and
+get one horizontal bar per tank showing their kg inventory, sorted by
+total (descending/ascending) or tank ID. Two modes: **Stacked** (each
+tank's bar splits into one segment per element — total bar length is that
+tank's total inventory across the selected elements, the classic
+side-by-side-panel summary-figure shape) or **Grouped** (one bar per
+element per tank, for comparing magnitudes directly rather than a
+cumulative total). Log scale is available for Grouped; it's left
+available for Stacked too but not recommended there, since a log axis
+makes stacked segment lengths visually non-additive. Uses the same "top
+tanks" control as the tank-similarity/tank×element plots above.
 
 ### 10.3 Structure
 

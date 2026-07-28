@@ -57,6 +57,20 @@ class TestWorkbenchTab:
         skipped = tab._table_views["Skipped"].dataframe()
         assert "Cd" in set(skipped["ExcludedElement"])
 
+    def test_tank_inventory_bars_uses_its_own_mode_and_sort_controls(self, qtbot, sample_dataset):
+        tab = _make_tab(qtbot)
+        tab.on_dataset_changed(sample_dataset)
+        tab.elements_edit.setText("Fe, Na, Cd")
+        tab.build_data()
+        qtbot.wait(20)
+        tab.plot_type_combo.setCurrentText("Tank inventory bars")
+        tab.bar_mode_combo.setCurrentText("Grouped")
+        tab.bar_sort_combo.setCurrentText("Tank ID (A-Z)")
+        tab.plot_selected()
+        qtbot.wait(20)
+        assert len(tab.plot.ax.containers) == 3  # one per selected element
+        assert "grouped" in tab.plot.ax.get_title().lower()
+
     def test_all_plot_types_render_without_crash(self, qtbot, sample_dataset):
         tab = _make_tab(qtbot)
         tab.on_dataset_changed(sample_dataset)

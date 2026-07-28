@@ -27,7 +27,7 @@ citation) and the exact data provenance.
 | **Tank Attributes** | Browse joined tank engineering metadata (type, capacity, integrity, status). |
 | **Tank Explorer** | Multi-tank composition profiles, fraction-of-tank-total, raw-row drill-down. |
 | **Heatmaps** | Tank×element inventory matrices (log/raw/fraction modes). |
-| **Correlations** | Quick Scan (target/dual/triple/full-matrix correlation, partial-correlation tank-size control), Association Workbench (kg-only Jaccard co-presence + preferred-association scoring, 17 plot types), Structure (PCA/clustering, partial correlation, network graph, interactive Plotly export). |
+| **Correlations** | Quick Scan (target/dual/triple/full-matrix correlation, partial-correlation tank-size control), Association Workbench (kg-only Jaccard co-presence + preferred-association scoring, 18 plot types incl. publication-style tank inventory bar charts), Structure (PCA/clustering, partial correlation, network graph, interactive Plotly export). |
 | **Vitrification** | Screening (adjustable-weight glass-formulation heuristic), Oxide Chemistry (element→oxide stoichiometric conversion, optical basicity, NBO/T, composition envelope checking, optional GlassNet ML property prediction), Candidate Search, Blend Partners. |
 | **Figure Composer** | Combine any plots captured from any workspace into one multi-panel publication figure, with automatic panel labels (A, B, C, ...) and exact-size/DPI export. |
 | **Debug / Export** | Global debug bundle export, environment info. |

@@ -373,6 +373,69 @@ class TestPlotSeabornTankElementMap:
         qtbot.wait(20)
 
 
+class TestPlotTankElementBars:
+    def test_empty_raw_matrix_shows_message(self, panel):
+        ph.plot_tank_element_bars(panel, pd.DataFrame(), ["Cs"])
+
+    def test_no_matching_elements_shows_message(self, panel, workbench_results):
+        ph.plot_tank_element_bars(panel, workbench_results["raw_matrix"], ["Zz"])
+
+    def test_all_zero_inventory_shows_message(self, panel):
+        raw = pd.DataFrame({"WasteSiteId": ["T1", "T2"], "Cs": [0.0, 0.0], "Sr": [0.0, 0.0]})
+        ph.plot_tank_element_bars(panel, raw, ["Cs", "Sr"])
+
+    def test_stacked_mode_renders_one_bar_container_per_element(self, panel, workbench_results, qtbot):
+        ph.plot_tank_element_bars(panel, workbench_results["raw_matrix"], ["Cs", "Sr", "Fe"], mode="Stacked")
+        qtbot.wait(20)
+        assert len(panel.ax.containers) == 3
+        assert "stacked" in panel.ax.get_title().lower()
+
+    def test_grouped_mode_renders_one_bar_container_per_element(self, panel, workbench_results, qtbot):
+        ph.plot_tank_element_bars(panel, workbench_results["raw_matrix"], ["Cs", "Sr", "Fe"], mode="Grouped")
+        qtbot.wait(20)
+        assert len(panel.ax.containers) == 3
+        assert "grouped" in panel.ax.get_title().lower()
+
+    def test_top_n_limits_tanks(self, panel, workbench_results, qtbot):
+        ph.plot_tank_element_bars(panel, workbench_results["raw_matrix"], ["Cs", "Sr"], top_n=2)
+        qtbot.wait(20)
+        assert len(panel.ax.get_yticklabels()) == 2
+
+    def test_sort_total_desc_puts_largest_tank_first(self, panel, qtbot):
+        raw = pd.DataFrame({"WasteSiteId": ["Small", "Big", "Mid"], "Cs": [1.0, 100.0, 10.0]})
+        ph.plot_tank_element_bars(panel, raw, ["Cs"], sort_by="Total (desc)")
+        qtbot.wait(20)
+        labels = [t.get_text() for t in panel.ax.get_yticklabels()]
+        assert labels[-1] == "Big"  # barh + reversed order -> largest ends up drawn at the top
+
+    def test_sort_tank_id_is_alphabetical(self, panel, qtbot):
+        raw = pd.DataFrame({"WasteSiteId": ["241-C-1", "241-A-1", "241-B-1"], "Cs": [1.0, 2.0, 3.0]})
+        ph.plot_tank_element_bars(panel, raw, ["Cs"], sort_by="Tank ID (A-Z)")
+        qtbot.wait(20)
+        labels = [t.get_text() for t in panel.ax.get_yticklabels()]
+        assert labels == ["241-C-1", "241-B-1", "241-A-1"]  # reversed -> A ends up at top
+
+    def test_log_scale_applies_to_grouped(self, panel, workbench_results, qtbot):
+        ph.plot_tank_element_bars(panel, workbench_results["raw_matrix"], ["Cs", "Sr"], mode="Grouped", log_scale=True)
+        qtbot.wait(20)
+        assert panel.ax.get_xscale() == "log"
+
+    def test_is_composable_with_figure_composer(self, panel, workbench_results, qtbot):
+        from composer_store import store
+        store.clear()
+        ph.plot_tank_element_bars(panel, workbench_results["raw_matrix"], ["Cs", "Sr"], mode="Grouped")
+        qtbot.wait(20)
+        panel._send_to_composer()
+        assert len(store.items()) == 1
+        # render_fn is the @composable-wrapped function's *inner* callable
+        # (captured by the decorator's own closure, to avoid re-tracking a
+        # recipe when Figure Composer replays it) -- not the same object as
+        # the wrapped ph.plot_tank_element_bars, hence a name check here
+        # rather than `is`.
+        assert store.items()[0].render_fn.__name__ == "plot_tank_element_bars"
+        store.clear()
+
+
 class TestPlotSeabornPresencePatterns:
     def test_empty_shows_message(self, panel):
         ph.plot_seaborn_presence_patterns(panel, pd.DataFrame(), ["Cs", "Sr"])
