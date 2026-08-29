@@ -178,6 +178,67 @@ class TestComposerStoreKwargOverrides:
         assert fresh_store.items() == []
 
 
+class TestItemEditedSignal:
+    """The changed/item_edited split is the composer performance fix's
+    foundation: structural mutations rebuild the grid (changed), per-item
+    edits take a targeted path (item_edited) -- and edits that don't
+    actually change anything emit NOTHING, since editingFinished-style Qt
+    signals re-fire on every focus change."""
+
+    def _spies(self, store):
+        structural, edits = [], []
+        store.changed.connect(lambda: structural.append(1))
+        store.item_edited.connect(lambda i, f: edits.append((i, f)))
+        return structural, edits
+
+    def test_field_setters_emit_item_edited_not_changed(self, fresh_store):
+        fresh_store.add_recipe(_fake_render, (), {"y": 1}, "c")
+        structural, edits = self._spies(fresh_store)
+        fresh_store.set_caption(0, "new")
+        fresh_store.set_title_override(0, "T")
+        fresh_store.set_xlabel_override(0, "X")
+        fresh_store.set_ylabel_override(0, "Y")
+        fresh_store.set_kwarg_override(0, "y", 2)
+        fresh_store.clear_kwarg_overrides(0)
+        assert structural == []
+        assert edits == [
+            (0, "caption"), (0, "title"), (0, "xlabel"), (0, "ylabel"),
+            (0, "kwargs"), (0, "kwargs"),
+        ]
+
+    def test_structural_mutations_still_emit_changed(self, fresh_store):
+        structural, edits = self._spies(fresh_store)
+        fresh_store.add_recipe(_fake_render, (), {}, "a")
+        fresh_store.add_recipe(_fake_render, (), {}, "b")
+        fresh_store.move(0, 1)
+        fresh_store.remove(0)
+        fresh_store.clear()
+        assert len(structural) == 5
+        assert edits == []
+
+    def test_no_op_edits_emit_nothing(self, fresh_store):
+        fresh_store.add_recipe(_fake_render, (), {"y": 1}, "same caption")
+        fresh_store.set_title_override(0, "T")
+        fresh_store.set_kwarg_override(0, "y", 9)
+        structural, edits = self._spies(fresh_store)
+        fresh_store.set_caption(0, "same caption")
+        fresh_store.set_title_override(0, "T")
+        fresh_store.set_xlabel_override(0, None)  # already None
+        fresh_store.set_ylabel_override(0, None)  # already None
+        fresh_store.set_kwarg_override(0, "y", 9)
+        assert structural == []
+        assert edits == []
+
+    def test_no_op_edit_does_not_replace_the_item(self, fresh_store):
+        # replace() would allocate a new kwarg_overrides dict, needlessly
+        # invalidating thumbnail caches keyed on the override values.
+        fresh_store.add_recipe(_fake_render, (), {}, "c")
+        fresh_store.set_kwarg_override(0, "a", 1)
+        before = fresh_store.items()[0]
+        fresh_store.set_kwarg_override(0, "a", 1)
+        assert fresh_store.items()[0] is before
+
+
 class TestComposerStoreClear:
     def test_clear_empties_the_list(self, fresh_store):
         fresh_store.add_recipe(_fake_render, (), {}, "1")

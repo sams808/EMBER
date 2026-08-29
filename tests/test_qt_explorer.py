@@ -70,6 +70,31 @@ class TestExplorerPage:
             page.plot_type_combo.setCurrentText(plot_type)
             qtbot.wait(20)
 
+    def test_target_by_waste_phase_actually_plots_phases(self, qtbot, sample_dataset):
+        # The pain-point case: this table always existed one tab away from
+        # a plot dropdown that couldn't draw it. Now it can -- assert real
+        # phase bars, not just no-crash.
+        page = _make_page(qtbot)
+        page.on_dataset_changed(sample_dataset)
+        page.query_edit.setText("Cs")
+        page.run_search()
+        qtbot.wait(20)
+        page.plot_type_combo.setCurrentText("Target by waste phase")
+        qtbot.wait(20)
+        labels = [t.get_text() for t in page.plot.ax.get_yticklabels()]
+        assert set(labels) == {"Liquid", "Sludge"}  # sample_dataset's Cs phases
+
+    def test_target_by_waste_type_actually_plots_types(self, qtbot, sample_dataset):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(sample_dataset)
+        page.query_edit.setText("Cs")
+        page.run_search()
+        qtbot.wait(20)
+        page.plot_type_combo.setCurrentText("Target by waste type")
+        qtbot.wait(20)
+        labels = [t.get_text() for t in page.plot.ax.get_yticklabels()]
+        assert set(labels) == {"T1", "T2"}
+
     def test_export_without_results_shows_message_not_crash(self, qtbot):
         page = _make_page(qtbot)
         page._export_bundle()

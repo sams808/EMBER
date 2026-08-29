@@ -25,7 +25,7 @@ import glass_science as gscience
 import oxide_science as oxsci
 import tank_science as tsci
 from data_model import HanfordDataset
-from qt_help import show_workspace_help
+from qt_help import make_help_button
 from qt_widgets import CollapsibleSection, DataFrameTableView
 
 SOURCES_NOTE = (
@@ -60,11 +60,7 @@ class OxideChemistryTab(QWidget):
         title.setObjectName("SectionTitle")
         header.addWidget(title)
         header.addStretch(1)
-        help_btn = QPushButton("?")
-        help_btn.setObjectName("HelpButton")
-        help_btn.setToolTip("What is this workspace for?")
-        help_btn.clicked.connect(lambda: show_workspace_help(self, 12, "Vitrification"))
-        header.addWidget(help_btn)
+        header.addWidget(make_help_button(self, 12, "Vitrification"))
         ll.addLayout(header)
 
         # Primary path: pick a farm, pick tanks, build. Oxide-mapping

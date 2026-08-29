@@ -22,7 +22,7 @@ import plot_helpers as ph
 from data_model import HanfordDataset
 from qt_correlations_structure import StructureTab
 from qt_correlations_workbench import WorkbenchTab
-from qt_help import show_workspace_help
+from qt_help import make_help_button
 from qt_widgets import CollapsibleSection, DataFrameTableView, PlotWidget
 
 METRICS = ["log10_plus1", "log10_inventory", "fraction", "inventory", "presence"]
@@ -54,11 +54,7 @@ class QuickScanTab(QWidget):
         self.unit_combo.setToolTip("Inventory unit used by every scan, comparison, and heatmap on this tab.")
         header.addWidget(self.unit_combo)
         header.addStretch(1)
-        help_btn = QPushButton("?")
-        help_btn.setObjectName("HelpButton")
-        help_btn.setToolTip("What is this workspace for?")
-        help_btn.clicked.connect(lambda: show_workspace_help(self, 10, "Correlations"))
-        header.addWidget(help_btn)
+        header.addWidget(make_help_button(self, 10, "Correlations"))
         root.addLayout(header)
 
         # Primary row: the three actions this tab exists to run, and nothing

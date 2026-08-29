@@ -124,9 +124,16 @@ class TestScoreContributionColumns:
         assert row["contrib_volatile"] == pytest.approx(-25 * 0)
         assert row["contrib_redox"] == pytest.approx(-10 * (2 / 17))
 
+    def test_registry_names_every_contrib_column_the_summary_writes(self, vitrification_dataset):
+        # SCORE_CONTRIB_TERMS is the one registry consumers (the breakdown
+        # plot) read -- it must exactly match what this function outputs.
+        out = vsci.tank_category_summary(vitrification_dataset)
+        written = [c for c in out.columns if c.startswith("contrib_")]
+        assert sorted(written) == sorted(vsci.SCORE_CONTRIB_TERMS)
+
     def test_contributions_sum_to_the_unclipped_score(self, vitrification_dataset):
         out = vsci.tank_category_summary(vitrification_dataset)
-        contrib_cols = ["contrib_glass_former", "contrib_modifier", "contrib_problem", "contrib_volatile", "contrib_redox"]
+        contrib_cols = list(vsci.SCORE_CONTRIB_TERMS)
         summed = out[contrib_cols].sum(axis=1)
         # None of this fixture's tanks hit the +/-100 clip, so the sum
         # should match the (clipped) score exactly for every row.

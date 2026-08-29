@@ -132,26 +132,33 @@ def tanks_in_farm(dataset: HanfordDataset, farm: Optional[str]) -> List[str]:
 
 
 def farm_inventory_rollup(dataset: HanfordDataset, unit: str = "kg") -> pd.DataFrame:
-    """One row per TankFarm: tank count, total inventory in a single unit
-    (kg and Ci are never summed together -- caller picks one), and which
-    waste type/phase carries the most inventory in that farm. Unlike
-    overview_science.farm_audit (row/tank counts only, unit-blind), this is
-    the composition-aware rollup: "how much waste, of what kind, is sitting
-    in each farm" rather than just "how many rows/tanks does each farm
-    have"."""
+    """One row per TankFarm -- EVERY farm in the dataset, including farms
+    with no positive rows in the requested unit (their numeric columns are
+    0 and dominant values null): an audit table must never silently drop a
+    farm just because its inventory lives in the other unit. Columns carry
+    the unit in their names (Total_inventory_kg, ...) so an exported or
+    on-screen table states its own basis -- kg and Ci are never summed
+    together, the caller picks one. Unlike overview_science.farm_audit
+    (row/tank counts only, unit-blind), this is the composition-aware
+    rollup: "how much waste, of what kind, is sitting in each farm"."""
     df = dataset.require_df()
     required = {"TankFarm", "Units", "Inventory", "WasteType", "WastePhase", "WasteSiteId"}
     if not required.issubset(set(df.columns)):
         return pd.DataFrame()
+
+    total_col = f"Total_inventory_{unit}"
+    mean_col = f"Mean_inventory_per_tank_{unit}"
+    all_farms = pl.DataFrame({"TankFarm": pl.Series(dataset.available_farms(), dtype=pl.Utf8)})
+    if all_farms.is_empty():
+        return pd.DataFrame()
+
     df = df.filter(
         (pl.col("Units") == unit) & pl.col("TankFarm").is_not_null() & (pl.col("Inventory") > 0)
     )
-    if df.is_empty():
-        return pd.DataFrame()
 
     totals = df.group_by("TankFarm").agg([
         pl.col("WasteSiteId").n_unique().alias("N_tanks"),
-        pl.col("Inventory").sum().alias("Total_inventory"),
+        pl.col("Inventory").sum().alias(total_col),
         pl.col("WasteType").n_unique().alias("N_waste_types"),
         pl.col("WastePhase").n_unique().alias("N_waste_phases"),
     ])
@@ -169,10 +176,22 @@ def farm_inventory_rollup(dataset: HanfordDataset, unit: str = "kg") -> pd.DataF
         )
 
     out = (
-        totals
+        all_farms
+        .join(totals, on="TankFarm", how="left")
         .join(_dominant("WasteType", "Dominant_waste_type"), on="TankFarm", how="left")
         .join(_dominant("WastePhase", "Dominant_waste_phase"), on="TankFarm", how="left")
-        .with_columns((pl.col("Total_inventory") / pl.col("N_tanks")).alias("Mean_inventory_per_tank"))
-        .sort("Total_inventory", descending=True)
+        .with_columns([
+            pl.col("N_tanks").fill_null(0),
+            pl.col(total_col).fill_null(0.0),
+            pl.col("N_waste_types").fill_null(0),
+            pl.col("N_waste_phases").fill_null(0),
+        ])
+        .with_columns(
+            pl.when(pl.col("N_tanks") > 0)
+            .then(pl.col(total_col) / pl.col("N_tanks"))
+            .otherwise(0.0)
+            .alias(mean_col)
+        )
+        .sort(total_col, descending=True)
     )
     return out.to_pandas()

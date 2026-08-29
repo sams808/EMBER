@@ -32,6 +32,11 @@ from PySide6.QtCore import QObject, Signal
 
 _uid_counter = itertools.count()
 
+# The item_edited field vocabulary for text overrides -- one definition
+# shared by the setters below and the qt page's edit routing, so a future
+# override field is added in one place.
+TEXT_OVERRIDE_FIELDS = ("title", "xlabel", "ylabel")
+
 
 @dataclass(frozen=True)
 class ComposerItem:
@@ -62,11 +67,24 @@ class ComposerItem:
 
 
 class ComposerStore(QObject):
-    """Emits `changed` after every mutation so the Figure Composer page
-    (if currently visible) can refresh its gallery/preview immediately,
-    even though the item was added from a completely different workspace."""
+    """Two signals with deliberately different costs downstream:
+
+    - `changed` fires only on STRUCTURAL mutations (add/remove/move/clear)
+      -- the composed grid's shape is stale, the page must rebuild it.
+    - `item_edited(index, field)` fires on per-item edits (caption, text
+      overrides, kwarg overrides) -- the grid's shape is still valid, only
+      the one panel (or, for a caption, only its gallery row) needs
+      touching. This split is what lets a title edit cost ~zero re-renders
+      instead of replaying every panel (the "9 renders per keystroke"
+      pipeline this replaced routed EVERY mutation through one
+      undifferentiated `changed`).
+
+    Every setter also early-returns without emitting when the new value
+    equals the old -- editingFinished-style Qt signals re-fire on focus
+    changes with unchanged text, and those must stay free."""
 
     changed = Signal()
+    item_edited = Signal(int, str)  # (index, field): caption|title|xlabel|ylabel|kwargs
 
     def __init__(self) -> None:
         super().__init__()
@@ -100,37 +118,41 @@ class ComposerStore(QObject):
             self._items[index], self._items[new_index] = self._items[new_index], self._items[index]
             self.changed.emit()
 
+    def _edit_field(self, index: int, attr: str, value: Any, field: str) -> None:
+        """Shared guard/replace/emit body for every per-item field setter --
+        one place for the bounds check, the no-op suppression, and the
+        item_edited emission, so the four public setters can't drift."""
+        if 0 <= index < len(self._items) and getattr(self._items[index], attr) != value:
+            self._items[index] = replace(self._items[index], **{attr: value})
+            self.item_edited.emit(index, field)
+
     def set_caption(self, index: int, caption: str) -> None:
-        if 0 <= index < len(self._items):
-            self._items[index] = replace(self._items[index], caption=caption)
-            self.changed.emit()
+        self._edit_field(index, "caption", caption, "caption")
 
     def set_title_override(self, index: int, title: Optional[str]) -> None:
-        if 0 <= index < len(self._items):
-            self._items[index] = replace(self._items[index], title_override=title)
-            self.changed.emit()
+        self._edit_field(index, "title_override", title, "title")
 
     def set_xlabel_override(self, index: int, xlabel: Optional[str]) -> None:
-        if 0 <= index < len(self._items):
-            self._items[index] = replace(self._items[index], xlabel_override=xlabel)
-            self.changed.emit()
+        self._edit_field(index, "xlabel_override", xlabel, "xlabel")
 
     def set_ylabel_override(self, index: int, ylabel: Optional[str]) -> None:
-        if 0 <= index < len(self._items):
-            self._items[index] = replace(self._items[index], ylabel_override=ylabel)
-            self.changed.emit()
+        self._edit_field(index, "ylabel_override", ylabel, "ylabel")
 
     def set_kwarg_override(self, index: int, key: str, value: Any) -> None:
-        if 0 <= index < len(self._items):
-            overrides = dict(self._items[index].kwarg_overrides)
-            overrides[key] = value
-            self._items[index] = replace(self._items[index], kwarg_overrides=overrides)
-            self.changed.emit()
+        if not (0 <= index < len(self._items)):
+            return
+        current = self._items[index].kwarg_overrides
+        if key in current and current[key] == value:
+            return
+        overrides = dict(current)
+        overrides[key] = value
+        self._items[index] = replace(self._items[index], kwarg_overrides=overrides)
+        self.item_edited.emit(index, "kwargs")
 
     def clear_kwarg_overrides(self, index: int) -> None:
         if 0 <= index < len(self._items) and self._items[index].kwarg_overrides:
             self._items[index] = replace(self._items[index], kwarg_overrides={})
-            self.changed.emit()
+            self.item_edited.emit(index, "kwargs")
 
     def clear(self) -> None:
         if self._items:

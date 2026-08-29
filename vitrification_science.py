@@ -65,6 +65,19 @@ SCREENING_WEIGHT_DEFAULTS: Dict[str, float] = {
     "glass_former_weight": 60.0, "modifier_weight": 25.0,
     "problem_weight": -45.0, "volatile_weight": -25.0, "redox_weight": -10.0,
 }
+# The screening score's per-term contribution columns (written by
+# tank_category_summary below) with their human-readable labels -- the ONE
+# registry every consumer (the score-breakdown plot in plot_helpers, any
+# future explainer UI) must read, so adding a sixth weighted term here
+# updates them all by construction instead of leaving a chart whose stacked
+# bars silently stop summing to the net score.
+SCORE_CONTRIB_TERMS: Dict[str, str] = {
+    "contrib_glass_former": "glass-former",
+    "contrib_modifier": "modifier",
+    "contrib_problem": "problem elements",
+    "contrib_volatile": "volatile/halide/sulfate",
+    "contrib_redox": "redox-sensitive",
+}
 CANDIDATE_WEIGHT_DEFAULTS: Dict[str, float] = {
     "target_weight": 0.50, "glass_former_weight": 0.25,
     "problem_weight": -0.20, "penalty_weight": -0.30,

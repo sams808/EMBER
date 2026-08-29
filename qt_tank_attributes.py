@@ -17,7 +17,7 @@ import export_utils
 import plot_helpers as ph
 import tank_science as tsci
 from data_model import HanfordDataset
-from qt_help import show_workspace_help
+from qt_help import make_help_button
 from qt_widgets import DataFrameTableView, PlotWidget
 
 CATEGORY_CHOICES = ["TankType", "TankSystem", "TankIntegrity", "TankStatus", "Ventilation", "TankFarm"]
@@ -46,11 +46,7 @@ class TankAttributesPage(QWidget):
         title.setObjectName("SectionTitle")
         header.addWidget(title)
         header.addStretch(1)
-        help_btn = QPushButton("?")
-        help_btn.setObjectName("HelpButton")
-        help_btn.setToolTip("What is this workspace for?")
-        help_btn.clicked.connect(lambda: show_workspace_help(self, 7, "Tank Attributes"))
-        header.addWidget(help_btn)
+        header.addWidget(make_help_button(self, 7, "Tank Attributes"))
         root.addLayout(header)
 
         controls = QHBoxLayout()

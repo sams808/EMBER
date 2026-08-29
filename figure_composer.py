@@ -22,8 +22,9 @@ panel.figure were the shared top-level Figure instead.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from io import BytesIO
-from typing import Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 from compose_science import DEFAULT_LABEL_STYLE, compute_grid_shape, panel_label
 
@@ -93,6 +94,10 @@ class ComposerCellPanel:
         self.figure = _FigureCompat(figure)
         self.ax = self.figure.add_subplot(111)
         self.canvas = _NullCanvas()
+        # Set by _render_item when the recipe raised -- the axes then hold
+        # an error placeholder, not the plot, and post-render text overrides
+        # must NOT be applied to it (the full pipeline skips them too).
+        self.render_failed = False
         # Recorded, not acted on, when wrapping a SubFigure (see
         # set_figure_size_inches below) -- compose_figure() reads this back
         # from a throwaway pre-measurement pass so a content-heavy panel
@@ -139,6 +144,7 @@ def _render_item(cell: ComposerCellPanel, item) -> None:
     try:
         item.render_fn(cell, *item.render_args, **item.effective_kwargs())
     except Exception as exc:
+        cell.render_failed = True
         cell.show_message(f"Could not re-render this panel:\n{exc}")
         return
     ax = cell.ax
@@ -152,7 +158,34 @@ def _render_item(cell: ComposerCellPanel, item) -> None:
         ax.set_ylabel(item.ylabel_override)
 
 
-def _measure_preferred_size(item) -> Optional[Tuple[float, float]]:
+# Measurement results, ONE entry per uid, each remembering the kwarg-
+# overrides token it was measured under. uid is stable across replace()-
+# based edits and render_args/render_kwargs are frozen at capture time
+# (deep-copied, never mutated afterward), so the ONLY thing that can change
+# what a recipe requests size-wise is its kwarg_overrides -- text overrides
+# are applied post-render and never reach the recipe. This turns
+# compose_figure's measurement pass from N low-DPI re-renders per rebuild
+# into cache hits for every unedited panel (add one panel: 2N+1 renders ->
+# N+1). A new token OVERWRITES the old entry rather than accumulating
+# beside it -- otherwise a session stepping top_n 30->40->50->... would
+# grow this module-level dict monotonically per live panel (review finding).
+_measure_cache: Dict[int, Tuple[str, Optional[Tuple[float, float]]]] = {}
+
+
+def _overrides_token(item) -> str:
+    """Stable, order-independent cache token for kwarg_overrides. repr()
+    rather than hashing the values directly because override values may be
+    unhashable (lists)."""
+    return repr(sorted(item.kwarg_overrides.items(), key=lambda kv: kv[0]))
+
+
+def _prune_measure_cache(items: Sequence) -> None:
+    live_uids = {item.uid for item in items}
+    for uid in [u for u in _measure_cache if u not in live_uids]:
+        del _measure_cache[uid]
+
+
+def measure_preferred_size(item, *, use_cache: bool = True) -> Optional[Tuple[float, float]]:
     """Cheaply discovers whether this item's recipe asks for a content-
     driven figure size (e.g. plot_barh growing taller for more bars) by
     replaying it once into a tiny, low-DPI, throwaway Figure and reading
@@ -167,6 +200,12 @@ def _measure_preferred_size(item) -> Optional[Tuple[float, float]]:
     already is" to preserve it while only changing height -- measured from
     a 1x1in figure, that read-back would itself just be the meaningless
     number 1.0, not a sensible width."""
+    token = _overrides_token(item)
+    if use_cache:
+        cached = _measure_cache.get(item.uid)
+        if cached is not None and cached[0] == token:
+            return cached[1]
+
     from matplotlib.figure import Figure
 
     fig = Figure(figsize=(PANEL_WIDTH_IN, PANEL_HEIGHT_IN), dpi=40)
@@ -174,18 +213,112 @@ def _measure_preferred_size(item) -> Optional[Tuple[float, float]]:
     try:
         item.render_fn(cell, *item.render_args, **item.effective_kwargs())
     except Exception:
+        _measure_cache[item.uid] = (token, None)
         return None
+    _measure_cache[item.uid] = (token, cell.requested_size)
     return cell.requested_size
+
+
+@dataclass
+class ComposedPanels:
+    """Live handles into the most recent compose_figure() output, kept so
+    per-panel edits can touch ONE panel instead of rebuilding the grid:
+
+    - text overrides mutate the panel's main axes in place (pixel-identical
+      to a full recompose by construction, because _render_item also
+      applies overrides post-render with no layout pass -- see
+      apply_text_override),
+    - parameter edits clear and replay one SubFigure (rerender_panel),
+    - only structural changes (add/remove/move, or an edit that changes a
+      panel's measured preferred size) force a full compose_figure().
+    """
+
+    subfigs: Dict[int, Any] = field(default_factory=dict)
+    cells: Dict[int, "ComposerCellPanel"] = field(default_factory=dict)
+    measured: Dict[int, Optional[Tuple[float, float]]] = field(default_factory=dict)
+    uids: Dict[int, int] = field(default_factory=dict)
+    label_style: str = DEFAULT_LABEL_STYLE
+    label_fontsize: int = 14
+
+    def matches(self, items: Sequence) -> bool:
+        """True when this layout still corresponds to `items` (same panels
+        in the same slots) -- the precondition for any single-panel path."""
+        return self.uids == {i: item.uid for i, item in enumerate(items)}
+
+
+def _draw_panel_label(subfig, index: int, label_style: str, label_fontsize: int) -> None:
+    label = panel_label(index, label_style)
+    if label:
+        subfig.text(
+            0.0, 0.99, label, transform=subfig.transSubfigure, fontsize=label_fontsize,
+            fontweight="bold", va="top", ha="left", color="black",
+        )
+
+
+def rerender_panel(panel, composed: ComposedPanels, index: int, item) -> None:
+    """Replays one item's recipe into its existing SubFigure slot, leaving
+    every sibling panel's artists untouched (SubFigure isolation). The slot
+    keeps its current grid size -- callers must fall back to a full
+    compose_figure() when the item's measured preferred size changed."""
+    subfig = composed.subfigs.get(index)
+    if subfig is None:
+        return
+    subfig.clear()
+    subfig.set_facecolor("white")
+    cell = ComposerCellPanel(subfig)
+    _render_item(cell, item)
+    _draw_panel_label(subfig, index, composed.label_style, composed.label_fontsize)
+    composed.cells[index] = cell
+    composed.uids[index] = item.uid
+    panel.canvas.draw_idle()
+
+
+def apply_text_override(panel, composed: ComposedPanels, index: int, item, fieldname: str) -> bool:
+    """Applies one title/xlabel/ylabel override to the already-rendered
+    panel IN PLACE -- zero recipe replays -- and returns True. This is
+    pixel-identical to what a full recompose would produce, because the
+    full pipeline (_render_item) also applies these overrides post-render
+    on the same axes with no subsequent layout pass; there is nothing a
+    re-render would compute differently for a text-only change.
+
+    Returns False when the in-place path can't produce the correct result
+    and the caller must re-render this one panel instead: an override
+    cleared back to None means "restore whatever text the recipe itself
+    draws", which only the recipe knows."""
+    cell = composed.cells.get(index)
+    if cell is None or cell.ax is None or cell.render_failed:
+        # A failed panel's axes hold the error placeholder; the full
+        # pipeline never applies overrides to it, so neither can we --
+        # returning False routes this through the (equally refusing, but
+        # honest) re-render path instead of drawing text over the error box.
+        return False
+    value = getattr(item, f"{fieldname}_override", None)
+    if value is None:
+        return False
+    ax = cell.ax
+    if fieldname == "title":
+        ax.set_title(value)
+    elif fieldname == "xlabel":
+        ax.set_xlabel(value)
+    elif fieldname == "ylabel":
+        ax.set_ylabel(value)
+    else:
+        return False
+    panel.canvas.draw_idle()
+    return True
 
 
 def compose_figure(
     panel, items: Sequence, *, cols: int = 0, label_style: str = DEFAULT_LABEL_STYLE,
     label_fontsize: int = 14, spacing: float = 0.05,
-) -> None:
+) -> Optional[ComposedPanels]:
     """Draws `items` (composer_store.ComposerItem) into `panel` (a
-    qt_widgets.PlotWidget) as a labeled grid of live subfigures. cols=0
+    qt_widgets.PlotWidget) as a labeled grid of live subfigures, and
+    returns per-panel handles (ComposedPanels) so later cosmetic/param
+    edits can touch one panel instead of rebuilding this grid. cols=0
     auto-picks a near-square layout; label_style is one of
-    compose_science.LABEL_STYLES."""
+    compose_science.LABEL_STYLES. Returns None when there was nothing to
+    compose."""
     n = len(items)
     if n == 0:
         # show_message() reuses panel.ax, so this must run BEFORE
@@ -194,10 +327,12 @@ def compose_figure(
         # still exists), leaving show_message() drawing into an axes that's
         # no longer actually part of the figure.
         panel.show_message('No panels yet -- click "-> Figure Composer" on any plot to add one.')
-        return
+        return None
     panel.figure.clear()
+    _prune_measure_cache(items)
 
     rows, ncols = compute_grid_shape(n, cols)
+    composed = ComposedPanels(label_style=label_style, label_fontsize=label_fontsize)
 
     # Each row/column starts at the uniform default and grows to fit
     # whichever item in it asked for more -- a wide heatmap or a bar chart
@@ -207,7 +342,8 @@ def compose_figure(
     col_widths = [PANEL_WIDTH_IN] * ncols
     row_heights = [PANEL_HEIGHT_IN] * rows
     for i, item in enumerate(items):
-        preferred = _measure_preferred_size(item)
+        preferred = measure_preferred_size(item)
+        composed.measured[i] = preferred
         if preferred is None:
             continue
         r, c = divmod(i, ncols)
@@ -231,14 +367,13 @@ def compose_figure(
         _render_item(cell, item)
         if first_ax is None:
             first_ax = cell.ax
-        label = panel_label(i, label_style)
-        if label:
-            subfig.text(
-                0.0, 0.99, label, transform=subfig.transSubfigure, fontsize=label_fontsize,
-                fontweight="bold", va="top", ha="left", color="black",
-            )
+        _draw_panel_label(subfig, i, label_style, label_fontsize)
+        composed.subfigs[i] = subfig
+        composed.cells[i] = cell
+        composed.uids[i] = item.uid
     panel.ax = first_ax
     panel.canvas.draw_idle()
+    return composed
 
 
 def render_thumbnail_png(item, *, width_in: float = 1.9, height_in: float = 1.4, dpi: int = 90) -> bytes:

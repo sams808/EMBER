@@ -447,9 +447,16 @@ class TestPlotVitrificationScoreBreakdown:
 
     def test_empty_dataframe_shows_message(self):
         panel = FakePanel()
-        cols = list(ph._SCORE_CONTRIB_COLUMNS) + ["WasteSiteId", "Vitrification_screening_score_proxy"]
+        cols = list(ph._score_contrib_columns()) + ["WasteSiteId", "Vitrification_screening_score_proxy"]
         ph.plot_vitrification_score_breakdown(panel, pd.DataFrame({c: [] for c in cols}))
         assert panel.messages == ["No score breakdown data"]
+
+    def test_term_registry_matches_the_science_layer(self):
+        # The plotted terms must be exactly what tank_category_summary
+        # writes -- a locally-maintained list would let the stacked bars
+        # silently stop summing to the net-score tick when a term is added.
+        import vitrification_science as vsci
+        assert list(ph._score_contrib_columns()) == list(vsci.SCORE_CONTRIB_TERMS)
 
     def _sample_df(self):
         return pd.DataFrame({

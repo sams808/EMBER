@@ -16,7 +16,7 @@ import export_utils
 import matrix_science as msci
 import plot_helpers as ph
 from data_model import HanfordDataset
-from qt_help import show_workspace_help
+from qt_help import make_help_button
 from qt_widgets import CollapsibleSection, DataFrameTableView, PlotWidget
 
 MODES = ["log10_inventory", "inventory", "fraction"]
@@ -40,11 +40,7 @@ class HeatmapPage(QWidget):
         title.setObjectName("SectionTitle")
         header.addWidget(title)
         header.addStretch(1)
-        help_btn = QPushButton("?")
-        help_btn.setObjectName("HelpButton")
-        help_btn.setToolTip("What is this workspace for?")
-        help_btn.clicked.connect(lambda: show_workspace_help(self, 9, "Heatmaps"))
-        header.addWidget(help_btn)
+        header.addWidget(make_help_button(self, 9, "Heatmaps"))
         export_btn = QPushButton("Export inputs")
         export_btn.clicked.connect(self._export_inputs)
         header.addWidget(export_btn)

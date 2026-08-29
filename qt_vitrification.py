@@ -41,8 +41,7 @@ class VitrificationPage(QWidget):
         tank" flow straight into "what would blend well with it" without
         re-entering the tank ID in a different tab."""
         self.tabs.setCurrentWidget(self.blend_tab)
-        self.blend_tab.base_tank_combo.setCurrentText(tank_id)
-        self.blend_tab.run_blend()
+        self.blend_tab.set_base_tank_and_run(tank_id)
 
     def on_dataset_changed(self, dataset: HanfordDataset) -> None:
         self.screening_tab.on_dataset_changed(dataset)

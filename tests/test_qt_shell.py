@@ -186,12 +186,10 @@ class TestHelpMenu:
 class TestDebugMenu:
     """Debug/Export moved from a nav-rail workspace to a Help-menu dialog
     (rarely-needed troubleshooting tool, not something a first-time user
-    should see as a 9th equally-weighted workspace). show_debug() builds a
-    real QDialog wrapping a real DebugPage -- no swappable constructor
-    pattern like HelpDialog's -- so these patch QDialog.exec itself rather
-    than replacing the class, mirroring how _prevent_blocking_qt_dialogs/
-    _prevent_blocking_getting_started_dialog neutralize other real modals
-    by patching just the blocking method."""
+    should see as a 9th equally-weighted workspace). The dialog is shown
+    NON-modally -- a live log viewer must not block the very app actions
+    the user wants to observe -- so show_debug() never blocks under test
+    and needs no exec() neutralization."""
 
     def test_debug_not_in_nav_items(self):
         assert "Debug / Export" not in NAV_ITEMS
@@ -201,30 +199,29 @@ class TestDebugMenu:
         actions = [a.text() for a in window.findChildren(QAction)]
         assert "Debug / Export…" in actions
 
-    def test_first_call_builds_the_dialog_and_debug_page(self, window, monkeypatch):
-        from PySide6.QtWidgets import QDialog
-        monkeypatch.setattr(QDialog, "exec", lambda self: QDialog.Accepted)
-
+    def test_first_call_builds_the_dialog_and_debug_page(self, window):
         assert window.debug_page is None
         window.show_debug()
         assert window.debug_page is not None
-        assert window.debug_page in window._dataset_aware_pages
+        assert window.debug_page in window._dataset_aware_pages()
 
-    def test_second_call_reuses_the_same_dialog_and_page(self, window, monkeypatch):
-        from PySide6.QtWidgets import QDialog
-        monkeypatch.setattr(QDialog, "exec", lambda self: QDialog.Accepted)
+    def test_dialog_is_not_modal(self, window):
+        # Review finding: exec() made the live log viewer application-modal,
+        # so it could only ever show events from before it was opened.
+        window.show_debug()
+        assert window._debug_dialog.isModal() is False
+        assert window._debug_dialog.isVisible() is True
+        window._debug_dialog.close()
 
+    def test_second_call_reuses_the_same_dialog_and_page(self, window):
         window.show_debug()
         first_dialog, first_page = window._debug_dialog, window.debug_page
         window.show_debug()
         assert window._debug_dialog is first_dialog
         assert window.debug_page is first_page
-        assert window._dataset_aware_pages.count(first_page) == 1  # not appended again
+        assert window._dataset_aware_pages().count(first_page) == 1  # derived, never double-appended
 
-    def test_debug_page_receives_dataset_broadcasts_once_it_exists(self, window, monkeypatch, tmp_path):
-        from PySide6.QtWidgets import QDialog
-        monkeypatch.setattr(QDialog, "exec", lambda self: QDialog.Accepted)
-
+    def test_debug_page_receives_dataset_broadcasts_once_it_exists(self, window, tmp_path):
         window.show_debug()
         csv_path = tmp_path / "custom.csv"
         csv_path.write_text(
@@ -234,10 +231,7 @@ class TestDebugMenu:
         window._start_load(lambda: window.dataset.load(csv_path, use_cache=False))
         assert window.debug_page.dataset is window.dataset
 
-    def test_opening_after_a_dataset_is_already_loaded_syncs_immediately(self, window, monkeypatch, tmp_path):
-        from PySide6.QtWidgets import QDialog
-        monkeypatch.setattr(QDialog, "exec", lambda self: QDialog.Accepted)
-
+    def test_opening_after_a_dataset_is_already_loaded_syncs_immediately(self, window, tmp_path):
         csv_path = tmp_path / "custom.csv"
         csv_path.write_text(
             "WasteSiteId,Analyte,WastePhase,WasteType,Inventory,Units\n"

@@ -32,6 +32,24 @@ class TestScreeningTab:
         summary = tab._table_views["Screening summary"].dataframe()
         assert set(summary["WasteSiteId"]) == set(vitrification_dataset.available_tanks())
 
+    def test_custom_persisted_weights_are_disclosed_not_hidden(self, qtbot):
+        # Review finding: QSettings-persisted weight edits survive restarts;
+        # with the weights section collapsed by default, a non-default score
+        # would be silently applied. Custom weights must auto-expand the
+        # section so the formula readout is on screen.
+        tab = ScreeningTab(_window(qtbot))
+        qtbot.addWidget(tab)
+        tab.weight_spins["glass_former_weight"].setValue(5.0)  # persists via QSettings
+
+        tab2 = ScreeningTab(_window(qtbot))  # fresh construction reads the persisted value
+        qtbot.addWidget(tab2)
+        assert tab2.advanced_section.is_expanded() is True
+
+    def test_default_weights_leave_the_section_collapsed(self, qtbot):
+        tab = ScreeningTab(_window(qtbot))
+        qtbot.addWidget(tab)
+        assert tab.advanced_section.is_expanded() is False
+
     def test_default_plot_is_score_breakdown(self, qtbot):
         tab = ScreeningTab(_window(qtbot))
         qtbot.addWidget(tab)

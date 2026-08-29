@@ -42,6 +42,45 @@ class TestOverviewPage:
         top = page._table_views["Top elements"].dataframe()
         assert set(top["Units"]) == {"kg"}
 
+    def test_farm_plot_labels_match_the_data_actually_plotted(self, qtbot, sample_dataset):
+        # Review finding: _update_plot labeled the farm plot with the LIVE
+        # unit combo while plotting the rollup cached at the last Refresh --
+        # a chart titled "(kg)" could carry Ci values. Labels must state the
+        # unit the cached data was computed in, not whatever the combo says
+        # right now.
+        page = _make_page(qtbot)
+        page.on_dataset_changed(sample_dataset)  # refresh resolves to kg
+        qtbot.wait(20)
+        page.unit_combo.setCurrentText("Ci")  # no refresh happens here
+        page.plot_type_combo.setCurrentText("Farm rollup by inventory")
+        qtbot.wait(20)
+        assert "kg" in page.plot.ax.get_xlabel()
+        assert "Ci" not in page.plot.ax.get_xlabel()
+
+    def test_farm_table_keeps_farms_that_lack_rows_in_the_resolved_unit(self, qtbot):
+        # Review finding: the rollup replaced the complete unit-blind farm
+        # audit, so a farm reported only in the other unit silently vanished
+        # from the table -- an audit view must list every farm.
+        import data_model as dm
+        import polars as pl
+        dataset = dm.HanfordDataset()
+        rows = {
+            "WasteSiteId": ["241-A-101", "241-SX-101"],
+            "Analyte": ["Fe", "137Cs"],
+            "WastePhase": ["Solid", "Liquid"],
+            "WasteType": ["T1", "T2"],
+            "Inventory": [50.0, 200.0],
+            "Units": ["kg", "Ci"],  # SX farm exists ONLY in Ci
+        }
+        dataset.df = dataset._clean_dataframe(pl.DataFrame(rows))
+        dataset.report = None
+
+        page = _make_page(qtbot)
+        page.on_dataset_changed(dataset)
+        qtbot.wait(20)
+        farms_table = page._table_views["Tank farms"].dataframe()
+        assert "SX" in set(farms_table["TankFarm"])
+
     def test_export_without_dataset_shows_message_not_crash(self, qtbot):
         page = _make_page(qtbot)
         page._export_debug_bundle()  # must not raise

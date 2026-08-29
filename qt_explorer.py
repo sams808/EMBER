@@ -19,7 +19,7 @@ import element_science as esci
 import export_utils
 import plot_helpers as ph
 from data_model import HanfordDataset
-from qt_help import show_workspace_help
+from qt_help import make_help_button
 from qt_widgets import CollapsibleSection, DataFrameTableView, PlotWidget
 
 MODES = ["auto", "element", "analyte_exact", "analyte_contains", "regex"]
@@ -36,6 +36,8 @@ def _unit_suffix(df: Optional[pd.DataFrame]) -> str:
 PLOT_TYPES = [
     "Target inventory by tank",
     "Target fraction by tank",
+    "Target by waste phase",
+    "Target by waste type",
     "Target vs total inventory",
     "Co-elements inventory",
     "Co-elements presence (%)",
@@ -62,11 +64,7 @@ class ExplorerPage(QWidget):
         title.setObjectName("SectionTitle")
         header.addWidget(title)
         header.addStretch(1)
-        help_btn = QPushButton("?")
-        help_btn.setObjectName("HelpButton")
-        help_btn.setToolTip("What is this workspace for?")
-        help_btn.clicked.connect(lambda: show_workspace_help(self, 6, "Element Explorer"))
-        header.addWidget(help_btn)
+        header.addWidget(make_help_button(self, 6, "Element Explorer"))
         export_btn = QPushButton("Export result bundle")
         export_btn.clicked.connect(self._export_bundle)
         header.addWidget(export_btn)
@@ -226,6 +224,8 @@ class ExplorerPage(QWidget):
         plot_type = self.plot_type_combo.currentText()
         symbol = getattr(self, "_symbol", None)
         target_by_tank = self._results.get("Target by tank")
+        target_by_phase = self._results.get("Target by phase")
+        target_by_type = self._results.get("Target by type")
         co_el = self._results.get("Co-elements")
         abs_stats = self._results.get("Composition (absolute)")
         frac_stats = self._results.get("Composition (fraction)")
@@ -235,6 +235,21 @@ class ExplorerPage(QWidget):
             ph.plot_barh(self.plot, target_by_tank, "WasteSiteId", "Target_Inventory_sum",
                          "Target inventory by tank", xlabel, top_n=self.top_n_spin.value(),
                          highlighted_label=symbol, log_x=True)
+        elif plot_type in ("Target by waste phase", "Target by waste type"):
+            # These tables have existed since day one, one tab over -- this
+            # branch is what finally lets them be *drawn*. One shared body
+            # (mapping, not twin copy-paste branches) so the next grouped
+            # dimension is a table entry, not a pasted block. Mixed-unit
+            # results (unit filter "All") get per-bar unit suffixes from
+            # make_unique_plot_labels, so kg and Ci bars stay tellable
+            # apart rather than silently sharing an axis.
+            df, label_col, title = {
+                "Target by waste phase": (target_by_phase, "WastePhase", "Target inventory by waste phase"),
+                "Target by waste type": (target_by_type, "WasteType", "Target inventory by waste type"),
+            }[plot_type]
+            xlabel = (f"Target inventory: {symbol}" if symbol else "Target inventory") + _unit_suffix(df)
+            ph.plot_barh(self.plot, df, label_col, "Target_Inventory_sum",
+                         title, xlabel, top_n=self.top_n_spin.value(), log_x=True)
         elif plot_type == "Target fraction by tank":
             xlabel = f"Fraction of tank total: {symbol}" if symbol else "Fraction"
             ph.plot_barh(self.plot, target_by_tank, "WasteSiteId", "TargetFractionOfTankUnitInventory",

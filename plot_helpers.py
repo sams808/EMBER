@@ -1238,13 +1238,22 @@ def plot_element_network(panel, network_nodes: pd.DataFrame, network_edges: pd.D
 # plot_blend_scores.
 # ---------------------------------------------------------------------------
 
-_SCORE_CONTRIB_COLUMNS = {
-    "contrib_glass_former": ("glass-former", "#2c7a4b"),
-    "contrib_modifier": ("modifier", "#5a9bd4"),
-    "contrib_problem": ("problem elements", "#c1502e"),
-    "contrib_volatile": ("volatile/halide/sulfate", "#d9a441"),
-    "contrib_redox": ("redox-sensitive", "#8a6fb5"),
-}
+# Term names/labels come from vitrification_science.SCORE_CONTRIB_TERMS --
+# the single registry tank_category_summary's contrib_* columns are defined
+# against -- so a new weighted term added there shows up in this plot by
+# construction (review finding: a local copy would let the stacked bars
+# silently stop summing to the net-score tick). Colors cycle if the
+# registry ever outgrows this palette.
+_SCORE_COLORS = ["#2c7a4b", "#5a9bd4", "#c1502e", "#d9a441", "#8a6fb5"]
+
+
+def _score_contrib_columns() -> Dict[str, Tuple[str, str]]:
+    from vitrification_science import SCORE_CONTRIB_TERMS
+
+    return {
+        col: (label, _SCORE_COLORS[i % len(_SCORE_COLORS)])
+        for i, (col, label) in enumerate(SCORE_CONTRIB_TERMS.items())
+    }
 
 
 @composable
@@ -1256,14 +1265,21 @@ def plot_vitrification_score_breakdown(panel, data: pd.DataFrame, title: str = "
     problem, volatile, and redox content (tank_category_summary's own
     contrib_* columns, so this can never drift out of sync with the real
     score), with a tick mark at the net (clipped) score."""
-    required = list(_SCORE_CONTRIB_COLUMNS) + ["WasteSiteId", "Vitrification_screening_score_proxy"]
+    contrib_columns = _score_contrib_columns()
+    required = list(contrib_columns) + ["WasteSiteId", "Vitrification_screening_score_proxy"]
     if data is None or data.empty or any(c not in data for c in required):
         panel.show_message("No score breakdown data")
         return
-    pdf = data.copy()
-    for c in _SCORE_CONTRIB_COLUMNS:
+    # Trim to the plotted slice BEFORE copying/coercing -- the summary frame
+    # carries ~30 columns for all 177 tanks and only top_n rows x these
+    # columns are drawn (review finding: whole-frame copy per repaint).
+    pdf = (
+        data.loc[:, required]
+        .nlargest(int(top_n), "Vitrification_screening_score_proxy")
+        .copy()
+    )
+    for c in contrib_columns:
         pdf[c] = numeric_plot_series(pdf[c]).fillna(0.0)
-    pdf = pdf.sort_values("Vitrification_screening_score_proxy", ascending=False).head(int(top_n))
     pdf = pdf.iloc[::-1]  # barh draws bottom-to-top; reverse for highest score at the top
 
     ax = panel.reset_axes()
@@ -1275,7 +1291,7 @@ def plot_vitrification_score_breakdown(panel, data: pd.DataFrame, title: str = "
     y = np.arange(len(pdf))
     left_pos = np.zeros(len(pdf))
     left_neg = np.zeros(len(pdf))
-    for col, (label, color) in _SCORE_CONTRIB_COLUMNS.items():
+    for col, (label, color) in contrib_columns.items():
         vals = pdf[col].to_numpy(dtype=float)
         lefts = np.where(vals >= 0, left_pos, left_neg)
         ax.barh(y, vals, left=lefts, height=0.7, color=color, label=label)

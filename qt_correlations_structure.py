@@ -25,7 +25,7 @@ import html_export as he
 import plot_helpers as ph
 import structure_science as ssci
 from data_model import HanfordDataset
-from qt_help import show_workspace_help
+from qt_help import make_help_button
 from qt_widgets import CollapsibleSection, DataFrameTableView, PlotWidget
 
 METRICS = ["log10_plus1", "log10_inventory", "fraction", "inventory", "presence"]
@@ -60,11 +60,7 @@ class StructureTab(QWidget):
         note.setObjectName("SectionNote")
         top.addWidget(note)
         top.addStretch(1)
-        help_btn = QPushButton("?")
-        help_btn.setObjectName("HelpButton")
-        help_btn.setToolTip("What is this workspace for?")
-        help_btn.clicked.connect(lambda: show_workspace_help(self, 10, "Correlations"))
-        top.addWidget(help_btn)
+        top.addWidget(make_help_button(self, 10, "Correlations"))
         export_tables_btn = QPushButton("Export all tables")
         export_tables_btn.clicked.connect(self.export_tables)
         top.addWidget(export_tables_btn)

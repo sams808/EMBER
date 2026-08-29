@@ -24,7 +24,7 @@ import plot_helpers as ph
 import vitrification_science as vsci
 from correlation_science import parse_element_list
 from data_model import HanfordDataset
-from qt_help import show_workspace_help
+from qt_help import make_help_button
 from qt_widgets import CollapsibleSection, DataFrameTableView, PlotWidget
 
 BASIS_OPTIONS = ["elemental", "oxide"]
@@ -59,6 +59,15 @@ def _current_weights(spins: Dict[str, QDoubleSpinBox]) -> Dict[str, float]:
     return {key: spin.value() for key, spin in spins.items()}
 
 
+def _disclose_custom_weights(section, spins: Dict[str, QDoubleSpinBox], defaults: Dict[str, float]) -> None:
+    """QSettings-persisted weight edits survive restarts -- if any differ
+    from the documented defaults, the collapsed Advanced section would
+    silently apply a non-default score. Auto-expand it so the weights (and
+    the formula readout) are on screen before anyone builds a summary."""
+    if any(spins[key].value() != default for key, default in defaults.items()):
+        section.set_expanded(True)
+
+
 class ScreeningTab(QWidget):
     # Emits a WasteSiteId when the user double-clicks a row in the
     # Screening summary table -- lets VitrificationPage jump straight to
@@ -85,11 +94,7 @@ class ScreeningTab(QWidget):
         note.setObjectName("SectionNote")
         top.addWidget(note)
         top.addStretch(1)
-        help_btn = QPushButton("?")
-        help_btn.setObjectName("HelpButton")
-        help_btn.setToolTip("What is this workspace for?")
-        help_btn.clicked.connect(lambda: show_workspace_help(self, 12, "Vitrification"))
-        top.addWidget(help_btn)
+        top.addWidget(make_help_button(self, 12, "Vitrification"))
         export_btn = QPushButton("Export")
         export_btn.clicked.connect(self.export_tables)
         top.addWidget(export_btn)
@@ -140,6 +145,7 @@ class ScreeningTab(QWidget):
         self._update_formula_label()
 
         root.addWidget(self.advanced_section)
+        _disclose_custom_weights(self.advanced_section, self.weight_spins, vsci.SCREENING_WEIGHT_DEFAULTS)
 
         hint = QLabel("Double-click a tank in Screening summary to find blend partners for it.")
         hint.setObjectName("SectionNote")
@@ -233,11 +239,7 @@ class CandidateSearchTab(QWidget):
         title.setObjectName("SectionTitle")
         top.addWidget(title)
         top.addStretch(1)
-        help_btn = QPushButton("?")
-        help_btn.setObjectName("HelpButton")
-        help_btn.setToolTip("What is this workspace for?")
-        help_btn.clicked.connect(lambda: show_workspace_help(self, 12, "Vitrification"))
-        top.addWidget(help_btn)
+        top.addWidget(make_help_button(self, 12, "Vitrification"))
         export_btn = QPushButton("Export")
         export_btn.clicked.connect(self.export_tables)
         top.addWidget(export_btn)
@@ -294,6 +296,7 @@ class CandidateSearchTab(QWidget):
         adv.addLayout(weights_row)
 
         root.addWidget(self.advanced_section)
+        _disclose_custom_weights(self.advanced_section, self.weight_spins, vsci.CANDIDATE_WEIGHT_DEFAULTS)
 
         splitter = QSplitter()
         root.addWidget(splitter, 1)
@@ -351,11 +354,7 @@ class BlendPartnersTab(QWidget):
         title.setObjectName("SectionTitle")
         top.addWidget(title)
         top.addStretch(1)
-        help_btn = QPushButton("?")
-        help_btn.setObjectName("HelpButton")
-        help_btn.setToolTip("What is this workspace for?")
-        help_btn.clicked.connect(lambda: show_workspace_help(self, 12, "Vitrification"))
-        top.addWidget(help_btn)
+        top.addWidget(make_help_button(self, 12, "Vitrification"))
         export_btn = QPushButton("Export")
         export_btn.clicked.connect(self.export_tables)
         top.addWidget(export_btn)
@@ -399,6 +398,7 @@ class BlendPartnersTab(QWidget):
         adv.addLayout(weights_row)
 
         root.addWidget(self.advanced_section)
+        _disclose_custom_weights(self.advanced_section, self.weight_spins, vsci.BLEND_WEIGHT_DEFAULTS)
 
         splitter = QSplitter()
         root.addWidget(splitter, 1)
@@ -424,6 +424,14 @@ class BlendPartnersTab(QWidget):
         elif tanks:
             self.base_tank_combo.setCurrentIndex(0)
         self.base_tank_combo.blockSignals(False)
+
+    def set_base_tank_and_run(self, tank_id: str) -> None:
+        """Public cross-tab entry point (VitrificationPage's jump from a
+        double-clicked Screening row lands here) -- keeps the combo and
+        run_blend() as private implementation details this tab is free to
+        refactor without breaking its sibling."""
+        self.base_tank_combo.setCurrentText(tank_id)
+        self.run_blend()
 
     def run_blend(self) -> None:
         if self.dataset is None or not self.dataset.is_loaded():

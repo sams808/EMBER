@@ -20,7 +20,7 @@ import ast
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
@@ -30,9 +30,9 @@ from PySide6.QtWidgets import (
 
 import compose_science as csci
 import figure_composer as fcomp
-from composer_store import store
+from composer_store import TEXT_OVERRIDE_FIELDS, store
 from data_model import HanfordDataset
-from qt_help import show_workspace_help
+from qt_help import make_help_button
 from qt_widgets import CollapsibleSection, PlotWidget
 
 
@@ -48,12 +48,36 @@ def _parse_param_text(text: str) -> Any:
 
 
 class FigureComposerPage(QWidget):
+    """Rendering discipline (the fix for "a title edit replays every
+    panel"): the store's STRUCTURAL `changed` signal triggers a full
+    gallery+preview rebuild, while per-item `item_edited` signals take the
+    cheapest correct path -- caption edits touch one gallery row, text
+    overrides mutate one panel's axes in place, parameter edits re-render
+    exactly one SubFigure after a short debounce (falling back to a full
+    recompose only when the edit changed that panel's measured preferred
+    size). All signal-driven work is skipped while the page is hidden --
+    capturing plots from other workspaces just marks the preview stale,
+    and showEvent settles the debt when the user actually navigates
+    here."""
+
     def __init__(self, app_window, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.app_window = app_window
-        self._thumbnail_cache: Dict[tuple, bytes] = {}
+        self._thumbnail_cache: Dict[int, tuple] = {}  # uid -> (render-state token, png bytes)
+        self._composed: Optional[fcomp.ComposedPanels] = None
+        self._stale_full = False
+        self._dirty_panels: set = set()
+        self._dirty_thumbs: set = set()
         self._build_ui()
-        store.changed.connect(self._refresh_gallery)
+        self._edit_timer = QTimer(self)
+        self._edit_timer.setSingleShot(True)
+        self._edit_timer.setInterval(200)
+        self._edit_timer.timeout.connect(self._process_dirty)
+        store.changed.connect(self._on_store_changed)
+        store.item_edited.connect(self._on_item_edited)
+        # Unconditional initial sync (unlike the signal-driven paths, which
+        # are visibility-guarded): the page may be constructed after panels
+        # were already captured, and must reflect them from the start.
         self._refresh_gallery()
 
     def _build_ui(self) -> None:
@@ -72,11 +96,7 @@ class FigureComposerPage(QWidget):
         title.setObjectName("SectionTitle")
         header.addWidget(title)
         header.addStretch(1)
-        help_btn = QPushButton("?")
-        help_btn.setObjectName("HelpButton")
-        help_btn.setToolTip("What is this workspace for?")
-        help_btn.clicked.connect(lambda: show_workspace_help(self, 13, "Figure Composer"))
-        header.addWidget(help_btn)
+        header.addWidget(make_help_button(self, 13, "Figure Composer"))
         ll.addLayout(header)
         note = QLabel('Click "→ Figure Composer" on any plot\'s toolbar, anywhere in Ember, to add it here.')
         note.setWordWrap(True)
@@ -231,36 +251,152 @@ class FigureComposerPage(QWidget):
         pass  # Figure Composer works on captured plot recipes, not the dataset directly.
 
     # ------------------------------------------------------------------
-    def _thumbnail_cache_key(self, item) -> tuple:
+    # Signal routing: structural vs per-item, visible vs hidden
+    # ------------------------------------------------------------------
+    def _on_store_changed(self) -> None:
+        if not self.isVisible():
+            # A capture from another workspace used to pay for a full
+            # recompose of a page nobody was looking at -- now it just
+            # marks the debt, paid once in showEvent.
+            self._stale_full = True
+            return
+        self._refresh_gallery()
+
+    def _on_item_edited(self, index: int, field: str) -> None:
+        items = store.items()
+        if not (0 <= index < len(items)):
+            return
+        item = items[index]
+        if field == "caption":
+            row = self.gallery_list.item(index)
+            if row is not None:
+                row.setText(item.caption or "(untitled)")
+            return
+        if index == self._selected_index():
+            # The full gallery rebuild used to be what repopulated the
+            # editor fields after an edit -- keep them honest directly.
+            # Cheap pure-widget sync, so it runs even while hidden;
+            # _populate_editors/_populate_params_table block their widgets'
+            # signals, so this can't re-enter the edit handlers. kwargs
+            # edits refresh only the params table (the override highlight),
+            # not every editor widget -- a kwargs commit originates IN that
+            # table and rebuilding five unrelated fields per cell edit is
+            # pure churn (review finding).
+            if field == "kwargs":
+                self._populate_params_table(item)
+            else:
+                self._populate_editors(item)
+        if not self.isVisible():
+            self._stale_full = True
+            return
+        in_place = False
+        if field in TEXT_OVERRIDE_FIELDS and self._composed is not None and self._composed.matches(items):
+            # Pixel-identical to a full recompose (see apply_text_override)
+            # at the cost of one canvas repaint instead of N panel replays.
+            # False means the override was cleared back to None -- only the
+            # recipe knows the original text, so that panel re-renders.
+            in_place = fcomp.apply_text_override(self.plot, self._composed, index, item, field)
+        if not in_place:
+            self._dirty_panels.add(index)
+        self._dirty_thumbs.add(index)
+        self._edit_timer.start()
+
+    def _process_dirty(self) -> None:
+        if not self.isVisible():
+            self._stale_full = self._stale_full or bool(self._dirty_panels) or bool(self._dirty_thumbs)
+            self._dirty_panels.clear()
+            self._dirty_thumbs.clear()
+            return
+        items = store.items()
+        # Bounds-filter (belt and braces on top of _refresh_gallery clearing
+        # dirty state on structural changes): a focus-out edit commit
+        # followed by a Remove click lands both events in one debounce
+        # window, and a stale index must never reach items[idx].
+        panels = sorted(i for i in self._dirty_panels if 0 <= i < len(items))
+        self._dirty_panels.clear()
+        thumbs = sorted(i for i in (self._dirty_thumbs | set(panels)) if 0 <= i < len(items))
+        self._dirty_thumbs.clear()
+        if panels:
+            needs_full = self._composed is None or not self._composed.matches(items)
+            if not needs_full:
+                for idx in panels:
+                    # An edit that changed this panel's content-driven size
+                    # request (e.g. top_n 30 -> 80 bars) invalidates the
+                    # grid geometry itself -- only then rebuild everything.
+                    if fcomp.measure_preferred_size(items[idx]) != self._composed.measured.get(idx):
+                        needs_full = True
+                        break
+            if needs_full:
+                self._rebuild_preview()
+            else:
+                for idx in panels:
+                    fcomp.rerender_panel(self.plot, self._composed, idx, items[idx])
+        for idx in thumbs:
+            if 0 <= idx < len(items):
+                self._update_row_thumbnail(idx, items[idx])
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._stale_full:
+            self._stale_full = False
+            self._dirty_panels.clear()
+            self._dirty_thumbs.clear()
+            self._refresh_gallery()
+        elif self._dirty_panels or self._dirty_thumbs:
+            self._process_dirty()
+
+    # ------------------------------------------------------------------
+    def _thumbnail_state(self, item) -> tuple:
+        # Value-based render-state token, NOT id(...) of the override
+        # dicts: id() can be recycled by the allocator after an item is
+        # removed, which made stale thumbnails possible under the old key.
+        # render_args/render_kwargs need no token of their own -- they are
+        # frozen at capture time and uid already identifies them.
         return (
-            item.uid, id(item.render_args), id(item.render_kwargs), id(item.kwarg_overrides),
+            fcomp._overrides_token(item),
             item.title_override, item.xlabel_override, item.ylabel_override,
         )
 
+    def _update_row_thumbnail(self, index: int, item) -> None:
+        row = self.gallery_list.item(index)
+        if row is None:
+            return
+        pixmap = QPixmap()
+        pixmap.loadFromData(self._thumbnail(item))
+        row.setIcon(QIcon(pixmap))
+
     def _thumbnail(self, item) -> bytes:
-        key = self._thumbnail_cache_key(item)
-        cached = self._thumbnail_cache.get(key)
-        if cached is not None:
-            return cached
+        # ONE entry per uid, remembering the state it was rendered under --
+        # a new state overwrites the old PNG instead of accumulating beside
+        # it, so a long editing session can't grow this cache per edit
+        # (review finding).
+        state = self._thumbnail_state(item)
+        cached = self._thumbnail_cache.get(item.uid)
+        if cached is not None and cached[0] == state:
+            return cached[1]
         png = fcomp.render_thumbnail_png(item)
-        self._thumbnail_cache[key] = png
+        self._thumbnail_cache[item.uid] = (state, png)
         return png
 
     def _refresh_gallery(self) -> None:
+        # A full rebuild supersedes any pending per-panel work, and dirty
+        # indices refer to the PRE-rebuild item order -- drop them so a
+        # structural change landing inside the debounce window can't leave
+        # a stale index for the timer to trip over.
+        self._edit_timer.stop()
+        self._dirty_panels.clear()
+        self._dirty_thumbs.clear()
         current = self.gallery_list.currentRow()
         items = store.items()
-        live_keys = {self._thumbnail_cache_key(item) for item in items}
-        for stale_key in [k for k in self._thumbnail_cache if k not in live_keys]:
-            del self._thumbnail_cache[stale_key]
+        live_uids = {item.uid for item in items}
+        for stale_uid in [u for u in self._thumbnail_cache if u not in live_uids]:
+            del self._thumbnail_cache[stale_uid]
 
         self.gallery_list.blockSignals(True)
         self.gallery_list.clear()
-        for item in items:
-            list_item = QListWidgetItem(item.caption or "(untitled)")
-            pixmap = QPixmap()
-            pixmap.loadFromData(self._thumbnail(item))
-            list_item.setIcon(QIcon(pixmap))
-            self.gallery_list.addItem(list_item)
+        for i, item in enumerate(items):
+            self.gallery_list.addItem(QListWidgetItem(item.caption or "(untitled)"))
+            self._update_row_thumbnail(i, item)
         n = self.gallery_list.count()
         if n:
             self.gallery_list.setCurrentRow(min(max(current, 0), n - 1))
@@ -286,15 +422,17 @@ class FigureComposerPage(QWidget):
             self.ylabel_edit.clear()
             self.params_table.setRowCount(0)
             return
-        item = items[row]
+        self._populate_editors(items[row])
+
+    def _populate_editors(self, item) -> None:
         self.caption_edit.setText(item.caption)
         self.hide_title_check.blockSignals(True)
         self.hide_title_check.setChecked(item.title_override == "")
         self.hide_title_check.blockSignals(False)
         self.title_edit.setText(item.title_override if item.title_override else "")
-        self.title_edit.setEnabled(selected and not self.hide_title_check.isChecked())
-        self.xlabel_edit.setText(item.xlabel_override or "")
-        self.ylabel_edit.setText(item.ylabel_override or "")
+        self.title_edit.setEnabled(not self.hide_title_check.isChecked())
+        self.xlabel_edit.setText(item.xlabel_override if item.xlabel_override else "")
+        self.ylabel_edit.setText(item.ylabel_override if item.ylabel_override else "")
         self._populate_params_table(item)
 
     def _populate_params_table(self, item) -> None:
@@ -387,7 +525,7 @@ class FigureComposerPage(QWidget):
 
     # ------------------------------------------------------------------
     def _rebuild_preview(self) -> None:
-        fcomp.compose_figure(
+        self._composed = fcomp.compose_figure(
             self.plot, store.items(), cols=self.cols_spin.value(),
             label_style=self.label_style_combo.currentText(),
             label_fontsize=self.label_size_spin.value(),

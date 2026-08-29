@@ -1,16 +1,33 @@
 import pytest
 from PySide6.QtWidgets import QMainWindow
 
+import figure_composer as fcomp
 from composer_store import store
 from qt_figure_composer import FigureComposerPage, _parse_param_text
 
+# Every _fake_plot invocation (preview panel, measurement pass, thumbnail)
+# appends here -- the unit of cost the incremental-rendering tests below
+# are written in. Reset by the autouse _clean_store fixture.
+RENDER_CALLS = []
+
 
 def _fake_plot(panel, value, *, label="default"):
+    RENDER_CALLS.append(1)
     ax = panel.reset_axes()
     ax.plot([0, 1], [0, value])
     ax.set_title(f"Fake plot ({label})")
     ax.set_xlabel("x")
     ax.set_ylabel("y")
+    panel.ax = ax
+    panel.canvas.draw_idle()
+
+
+def _sized_fake_plot(panel, value, *, extra_height=0.0):
+    RENDER_CALLS.append(1)
+    ax = panel.reset_axes()
+    ax.plot([0, 1], [0, value])
+    ax.set_title("Sized fake plot")
+    panel.set_figure_size_inches(fcomp.PANEL_WIDTH_IN, fcomp.PANEL_HEIGHT_IN + extra_height)
     panel.ax = ax
     panel.canvas.draw_idle()
 
@@ -32,8 +49,10 @@ def _clean_store():
     # with the real app -- reset it around every test so panels captured
     # (or left) by one test can't leak into the next.
     store.clear()
+    RENDER_CALLS.clear()
     yield
     store.clear()
+    RENDER_CALLS.clear()
 
 
 @pytest.fixture
@@ -42,6 +61,12 @@ def page(qtbot):
     qtbot.addWidget(app_window)
     p = FigureComposerPage(app_window)
     qtbot.addWidget(p)
+    # Shown, not just constructed: signal-driven refreshes are visibility-
+    # guarded (a hidden page defers work to showEvent), and these tests
+    # exercise the live-page behavior. The hidden path has its own tests
+    # in TestVisibilityDeferral below.
+    p.show()
+    qtbot.waitExposed(p)
     qtbot.wait(20)  # let the initial (empty-state) compose_figure()'s draw_idle flush
     yield p
     qtbot.wait(20)  # flush anything the test itself queued, before teardown deletes the widgets
@@ -307,3 +332,197 @@ class TestExport:
 class TestOnDatasetChanged:
     def test_does_not_raise(self, page):
         page.on_dataset_changed(None)  # Figure Composer ignores the dataset; must not raise
+
+
+@pytest.fixture
+def compose_counter(monkeypatch):
+    """Counts full compose_figure() grid rebuilds, preserving behavior."""
+    calls = []
+    real = fcomp.compose_figure
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(fcomp, "compose_figure", counting)
+    return calls
+
+
+class TestIncrementalRendering:
+    """The Stage-0 performance contract, asserted in units of recipe
+    replays: with 4 panels, the old pipeline charged a title edit 9 full
+    renders (4 measurements + 4 panel replays + 1 thumbnail). The new
+    routing must charge ~0 immediately and at most a debounced thumbnail
+    afterward -- and must never call compose_figure for a cosmetic edit."""
+
+    def _add_four(self, qtbot):
+        for i in range(4):
+            store.add_recipe(_fake_plot, (i + 1,), {"label": f"p{i}"}, f"panel {i}")
+        qtbot.wait(30)
+
+    def test_title_edit_costs_zero_immediate_renders_and_no_recompose(self, page, qtbot, compose_counter):
+        self._add_four(qtbot)
+        RENDER_CALLS.clear()
+        compose_counter.clear()
+
+        store.set_title_override(0, "New title")
+
+        assert compose_counter == []
+        assert RENDER_CALLS == []  # in-place: zero recipe replays right now
+        # The preview really shows the new title already (pixel-equivalent
+        # to a recompose, without one).
+        assert page._composed.cells[0].ax.get_title() == "New title"
+
+        qtbot.wait(350)  # debounce settles: at most the one thumbnail render
+        assert compose_counter == []
+        assert len(RENDER_CALLS) <= 1
+
+    def test_axis_label_edit_is_also_in_place(self, page, qtbot, compose_counter):
+        self._add_four(qtbot)
+        RENDER_CALLS.clear()
+        compose_counter.clear()
+        store.set_xlabel_override(2, "Se (kg)")
+        assert compose_counter == []
+        assert RENDER_CALLS == []
+        assert page._composed.cells[2].ax.get_xlabel() == "Se (kg)"
+
+    def test_clearing_a_title_re_renders_exactly_one_panel(self, page, qtbot, compose_counter):
+        self._add_four(qtbot)
+        store.set_title_override(0, "Custom")
+        qtbot.wait(350)
+        RENDER_CALLS.clear()
+        compose_counter.clear()
+
+        store.set_title_override(0, None)  # restore recipe original: needs that panel's recipe
+        qtbot.wait(350)
+
+        assert compose_counter == []  # still no grid rebuild
+        # measurement is cache-hit; re-render (1) + thumbnail (1)
+        assert len(RENDER_CALLS) <= 2
+        assert page._composed.cells[0].ax.get_title() == "Fake plot (p0)"
+
+    def test_param_edit_re_renders_one_panel_not_the_grid(self, page, qtbot, compose_counter):
+        self._add_four(qtbot)
+        RENDER_CALLS.clear()
+        compose_counter.clear()
+
+        store.set_kwarg_override(1, "label", "edited")
+        qtbot.wait(350)
+
+        assert compose_counter == []
+        # re-measure (1, cache miss on new overrides) + panel replay (1)
+        # + thumbnail (1) = 3, vs 9 for the old full pipeline.
+        assert len(RENDER_CALLS) == 3
+        assert page._composed.cells[1].ax.get_title() == "Fake plot (edited)"
+        assert len(page.plot.figure.axes) == 4  # grid intact
+
+    def test_param_edit_that_changes_measured_size_falls_back_to_full_recompose(self, page, qtbot, compose_counter):
+        store.add_recipe(_sized_fake_plot, (1,), {"extra_height": 0.0}, "sized")
+        store.add_recipe(_fake_plot, (2,), {"label": "plain"}, "plain")
+        qtbot.wait(30)
+        compose_counter.clear()
+
+        store.set_kwarg_override(0, "extra_height", 3.0)  # taller panel: grid geometry is stale
+        qtbot.wait(350)
+
+        assert compose_counter == [1]  # exactly one full rebuild, not per-keystroke storms
+
+    def test_caption_edit_renders_nothing_at_all(self, page, qtbot, compose_counter):
+        self._add_four(qtbot)
+        RENDER_CALLS.clear()
+        compose_counter.clear()
+
+        store.set_caption(2, "renamed")
+        qtbot.wait(350)
+
+        assert compose_counter == []
+        assert RENDER_CALLS == []
+        assert page.gallery_list.item(2).text() == "renamed"
+
+    def test_thumbnail_catches_up_after_debounce(self, page, qtbot):
+        self._add_four(qtbot)
+        icon_before = page.gallery_list.item(0).icon().cacheKey()
+        store.set_kwarg_override(0, "label", "different")
+        qtbot.wait(350)
+        assert page.gallery_list.item(0).icon().cacheKey() != icon_before
+
+
+class TestStructuralChangeDuringDebounce:
+    """Review finding (confirmed by 3 independent finders): a dirty panel
+    index queued by an edit outlived a structural removal inside the 200 ms
+    debounce window and indexed past the end of store.items() in the timer
+    slot. Focus-out commit followed by a Remove click lands both events in
+    one window essentially every time."""
+
+    def test_remove_after_edit_within_debounce_does_not_crash(self, page, qtbot):
+        for i in range(4):
+            store.add_recipe(_fake_plot, (i + 1,), {"label": f"p{i}"}, f"panel {i}")
+        qtbot.wait(30)
+
+        store.set_kwarg_override(3, "label", "edited")  # dirty index 3, timer armed
+        store.remove(0)                                  # now only 3 items: index 3 is stale
+        qtbot.wait(350)                                  # timer fires -- must not raise
+
+        assert len(store.items()) == 3
+        assert len(page.plot.figure.axes) == 3  # preview rebuilt cleanly
+
+    def test_clear_all_after_edit_within_debounce_does_not_crash(self, page, qtbot):
+        store.add_recipe(_fake_plot, (1,), {"label": "only"}, "solo")
+        qtbot.wait(30)
+        store.set_kwarg_override(0, "label", "edited")
+        store.clear()
+        qtbot.wait(350)  # must not raise
+        assert store.items() == []
+
+
+class TestVisibilityDeferral:
+    """Capturing plots from other workspaces used to pay for a full
+    recompose of a page nobody was looking at; now a hidden page defers
+    everything to showEvent."""
+
+    def test_capture_while_hidden_defers_all_rendering(self, page, qtbot, compose_counter):
+        page.hide()
+        qtbot.wait(20)
+        RENDER_CALLS.clear()
+        compose_counter.clear()
+
+        store.add_recipe(_fake_plot, (1,), {"label": "hidden-add"}, "captured while hidden")
+        qtbot.wait(50)
+
+        assert compose_counter == []
+        assert RENDER_CALLS == []
+        assert page.gallery_list.count() == 0  # not refreshed yet
+        assert page._stale_full is True
+
+    def test_show_settles_the_deferred_work_once(self, page, qtbot, compose_counter):
+        page.hide()
+        qtbot.wait(20)
+        store.add_recipe(_fake_plot, (1,), {"label": "a"}, "one")
+        store.add_recipe(_fake_plot, (2,), {"label": "b"}, "two")
+        compose_counter.clear()
+
+        page.show()
+        qtbot.waitExposed(page)
+        qtbot.wait(50)
+
+        assert compose_counter == [1]  # one rebuild for two captures
+        assert page.gallery_list.count() == 2
+        assert page._stale_full is False
+
+    def test_edit_while_hidden_defers_to_show(self, page, qtbot, compose_counter):
+        store.add_recipe(_fake_plot, (1,), {"label": "a"}, "one")
+        qtbot.wait(30)
+        page.hide()
+        qtbot.wait(20)
+        compose_counter.clear()
+        RENDER_CALLS.clear()
+
+        store.set_kwarg_override(0, "label", "edited-hidden")
+        qtbot.wait(350)
+        assert RENDER_CALLS == []  # nothing while hidden
+
+        page.show()
+        qtbot.waitExposed(page)
+        qtbot.wait(50)
+        assert compose_counter == [1]
+        assert page._composed.cells[0].ax.get_title() == "Fake plot (edited-hidden)"

@@ -179,12 +179,19 @@ class EmberMainWindow(QMainWindow):
         # Debug/Export is a troubleshooting utility, not a workspace -- it
         # lives in the Help menu (see show_debug()) instead of taking a nav
         # rail slot, and is built lazily on first open rather than eagerly
-        # here. It still needs dataset-changed broadcasts once it exists,
-        # so it's tracked separately from (but alongside) the nav pages.
+        # here. Broadcast membership is DERIVED in _dataset_aware_pages()
+        # rather than kept as a second hand-maintained list -- a list would
+        # have to be remembered at every future page addition, and a missed
+        # append silently starves that page of dataset updates.
         self.debug_page: Optional[DebugPage] = None
         self._debug_dialog: Optional[QDialog] = None
-        self._dataset_aware_pages: list = list(self._pages_by_nav.values())
         self.nav.setCurrentRow(0)
+
+    def _dataset_aware_pages(self) -> list:
+        pages = list(self._pages_by_nav.values())
+        if self.debug_page is not None:
+            pages.append(self.debug_page)
+        return pages
 
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -259,7 +266,7 @@ class EmberMainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Loaded {report.rows:,} rows x {report.columns} columns from {report.source_path.name}"
         )
-        for page in self._dataset_aware_pages:
+        for page in self._dataset_aware_pages():
             if hasattr(page, "on_dataset_changed"):
                 page.on_dataset_changed(self.dataset)
 
@@ -327,10 +334,12 @@ class EmberMainWindow(QMainWindow):
     def show_debug(self) -> None:
         """Debug/Export is a troubleshooting utility, not a workspace --
         built lazily on first open and kept around afterward (not
-        recreated) so the live log view's history survives across opens."""
+        recreated) so the live log view's history survives across opens.
+        Shown NON-modally: the whole point of a live log viewer is watching
+        events stream in while you operate the app to reproduce them --
+        exec() would block the very actions the user wants to observe."""
         if self._debug_dialog is None:
             self.debug_page = DebugPage(self)
-            self._dataset_aware_pages.append(self.debug_page)
             if self.dataset.is_loaded():
                 self.debug_page.on_dataset_changed(self.dataset)
             dialog = QDialog(self)
@@ -340,7 +349,9 @@ class EmberMainWindow(QMainWindow):
             layout.setContentsMargins(0, 0, 0, 0)
             layout.addWidget(self.debug_page)
             self._debug_dialog = dialog
-        self._debug_dialog.exec()
+        self._debug_dialog.show()
+        self._debug_dialog.raise_()
+        self._debug_dialog.activateWindow()
 
     def _restore_settings(self) -> None:
         from PySide6.QtCore import QSettings

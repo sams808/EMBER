@@ -64,6 +64,18 @@ def show_workspace_help(parent: Optional[QWidget], section_number: int, workspac
     HelpDialog(parent, markdown=markdown, title=f"{workspace_title} — Help").exec()
 
 
+def make_help_button(parent: QWidget, section_number: int, workspace_title: str) -> QPushButton:
+    """The per-workspace "?" button, built in ONE place -- every workspace
+    header adds one of these, and a copy-pasted five-line block at each
+    site is exactly how a tooltip rewording or a signature change drifts
+    silently across 13 call sites (review finding)."""
+    button = QPushButton("?", parent)
+    button.setObjectName("HelpButton")
+    button.setToolTip("What is this workspace for?")
+    button.clicked.connect(lambda: show_workspace_help(parent, section_number, workspace_title))
+    return button
+
+
 ABOUT_HTML = f"""
 <h2 style="margin-bottom:2px;">{APP_NAME} <span style="font-size:14px; color:#8a9099; font-weight:normal;">v{APP_VERSION}</span></h2>
 <p style="color:#4a4f58; margin-top:0;"><i>{APP_TAGLINE}</i></p>

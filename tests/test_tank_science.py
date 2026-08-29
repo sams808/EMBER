@@ -1,5 +1,6 @@
 import math
 
+import pandas as pd
 import pytest
 
 import tank_science as ts
@@ -159,10 +160,10 @@ class TestFarmInventoryRollup:
                 df.filter((df["TankFarm"] == farm) & (df["Units"] == "kg") & (df["Inventory"] > 0))
                 .get_column("Inventory").sum()
             )
-            assert out.loc[farm, "Total_inventory"] == pytest.approx(manual_total)
+            assert out.loc[farm, "Total_inventory_kg"] == pytest.approx(manual_total)
 
-        assert out.loc["A", "Total_inventory"] == pytest.approx(60.5)  # Fe 50 + Cd 0.5 + Fe 10
-        assert out.loc["AN", "Total_inventory"] == pytest.approx(500.0)  # Na
+        assert out.loc["A", "Total_inventory_kg"] == pytest.approx(60.5)  # Fe 50 + Cd 0.5 + Fe 10
+        assert out.loc["AN", "Total_inventory_kg"] == pytest.approx(500.0)  # Na
 
     def test_n_tanks_per_farm(self, sample_dataset):
         out = ts.farm_inventory_rollup(sample_dataset, unit="kg").set_index("TankFarm")
@@ -181,20 +182,51 @@ class TestFarmInventoryRollup:
 
     def test_mean_inventory_per_tank(self, sample_dataset):
         out = ts.farm_inventory_rollup(sample_dataset, unit="kg").set_index("TankFarm")
-        assert out.loc["A", "Mean_inventory_per_tank"] == pytest.approx(60.5)  # single tank in farm
+        assert out.loc["A", "Mean_inventory_per_tank_kg"] == pytest.approx(60.5)  # single tank in farm
 
     def test_kg_and_ci_are_never_summed_together(self, sample_dataset):
         kg_out = ts.farm_inventory_rollup(sample_dataset, unit="kg").set_index("TankFarm")
         ci_out = ts.farm_inventory_rollup(sample_dataset, unit="Ci").set_index("TankFarm")
-        assert kg_out.loc["A", "Total_inventory"] == pytest.approx(60.5)
-        assert ci_out.loc["A", "Total_inventory"] == pytest.approx(100.012)  # Cs 100 + Pu 0.002 + TotalAlpha 0.01
+        assert kg_out.loc["A", "Total_inventory_kg"] == pytest.approx(60.5)
+        assert ci_out.loc["A", "Total_inventory_Ci"] == pytest.approx(100.012)  # Cs 100 + Pu 0.002 + TotalAlpha 0.01
+
+    def test_column_names_carry_the_unit(self, sample_dataset):
+        # Review finding: a bare "Total_inventory" header on an exported
+        # table hides which unit it was computed in -- the name is the cue.
+        out = ts.farm_inventory_rollup(sample_dataset, unit="kg")
+        assert "Total_inventory_kg" in out.columns
+        assert "Mean_inventory_per_tank_kg" in out.columns
 
     def test_sorted_by_total_inventory_descending(self, sample_dataset):
         out = ts.farm_inventory_rollup(sample_dataset, unit="kg")
         assert out["TankFarm"].tolist() == ["AN", "A"]  # 500.0 > 60.5
 
-    def test_empty_when_unit_not_present(self, sample_dataset):
-        assert ts.farm_inventory_rollup(sample_dataset, unit="Bq").empty
+    def test_every_farm_listed_even_without_rows_in_the_unit(self):
+        # Review finding: an audit table must never silently drop a farm
+        # whose inventory lives entirely in the other unit.
+        import data_model as dm
+        import polars as pl
+        dataset = dm.HanfordDataset()
+        rows = {
+            "WasteSiteId": ["241-A-101", "241-SX-101"],
+            "Analyte": ["Fe", "137Cs"],
+            "WastePhase": ["Solid", "Liquid"],
+            "WasteType": ["T1", "T2"],
+            "Inventory": [50.0, 200.0],
+            "Units": ["kg", "Ci"],  # SX exists ONLY in Ci
+        }
+        dataset.df = dataset._clean_dataframe(pl.DataFrame(rows))
+        dataset.report = None
+        out = ts.farm_inventory_rollup(dataset, unit="kg").set_index("TankFarm")
+        assert set(out.index) == {"A", "SX"}
+        assert out.loc["SX", "Total_inventory_kg"] == pytest.approx(0.0)
+        assert out.loc["SX", "N_tanks"] == 0
+        assert pd.isna(out.loc["SX", "Dominant_waste_type"])
+
+    def test_unknown_unit_lists_all_farms_with_zeros(self, sample_dataset):
+        out = ts.farm_inventory_rollup(sample_dataset, unit="Bq")
+        assert set(out["TankFarm"]) == {"A", "AN"}
+        assert (out["Total_inventory_Bq"] == 0.0).all()
 
     def test_empty_when_no_tank_farm_column(self):
         import data_model as dm

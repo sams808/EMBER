@@ -19,7 +19,7 @@ import plot_helpers as ph
 import tank_science as tsci
 from data_model import HanfordDataset
 from plot_helpers import composable
-from qt_help import show_workspace_help
+from qt_help import make_help_button
 from qt_widgets import DataFrameTableView, PlotWidget
 
 PLOT_TYPES = ["Top elements by inventory", "Farm rollup by inventory"]
@@ -65,6 +65,7 @@ class OverviewPage(QWidget):
         self.dataset: Optional[HanfordDataset] = None
         self._top_elements_df = pd.DataFrame()
         self._farm_rollup_df = pd.DataFrame()
+        self._farm_rollup_unit_used: Optional[str] = None
         self._unit_label = "All"
         self._build_ui()
 
@@ -77,11 +78,7 @@ class OverviewPage(QWidget):
         title.setObjectName("SectionTitle")
         header.addWidget(title)
         header.addStretch(1)
-        help_btn = QPushButton("?")
-        help_btn.setObjectName("HelpButton")
-        help_btn.setToolTip("What is this workspace for?")
-        help_btn.clicked.connect(lambda: show_workspace_help(self, 5, "Overview"))
-        header.addWidget(help_btn)
+        header.addWidget(make_help_button(self, 5, "Overview"))
         root.addLayout(header)
 
         controls = QHBoxLayout()
@@ -167,6 +164,11 @@ class OverviewPage(QWidget):
 
         self._top_elements_df = top_elements
         self._farm_rollup_df = farm_rollup
+        # The unit the cached rollup was actually computed in -- the plot
+        # must label with THIS, never the live combo, which the user may
+        # have changed since the last Refresh (a "(kg)" title over Ci bars
+        # is a silently wrong chart).
+        self._farm_rollup_unit_used = farm_unit
         self._unit_label = unit
         self._update_plot()
         if announce:
@@ -190,12 +192,12 @@ class OverviewPage(QWidget):
     def _update_plot(self) -> None:
         plot_type = self.plot_type_combo.currentText()
         if plot_type == "Farm rollup by inventory":
-            if self._farm_rollup_df.empty:
+            unit = self._farm_rollup_unit_used
+            if self._farm_rollup_df.empty or not unit:
                 self.plot.show_message("No farm rollup data for this dataset.")
                 return
-            unit = self._farm_rollup_unit() or ""
             ph.plot_barh(
-                self.plot, self._farm_rollup_df, "TankFarm", "Total_inventory",
+                self.plot, self._farm_rollup_df, "TankFarm", f"Total_inventory_{unit}",
                 f"Total inventory by tank farm ({unit})", f"Total inventory ({unit})",
                 top_n=50,
             )
