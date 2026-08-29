@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Dict, Optional
 
 import pandas as pd
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QPushButton, QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget,
@@ -23,9 +24,11 @@ import plot_helpers as ph
 import vitrification_science as vsci
 from correlation_science import parse_element_list
 from data_model import HanfordDataset
-from qt_widgets import DataFrameTableView, PlotWidget
+from qt_help import show_workspace_help
+from qt_widgets import CollapsibleSection, DataFrameTableView, PlotWidget
 
 BASIS_OPTIONS = ["elemental", "oxide"]
+SCREENING_PLOT_TYPES = ["Score breakdown (top tanks)", "Screening map (kg vs Ci)"]
 
 
 def _build_weight_spins(layout: QHBoxLayout, defaults: Dict[str, float], settings_prefix: str) -> Dict[str, QDoubleSpinBox]:
@@ -57,6 +60,12 @@ def _current_weights(spins: Dict[str, QDoubleSpinBox]) -> Dict[str, float]:
 
 
 class ScreeningTab(QWidget):
+    # Emits a WasteSiteId when the user double-clicks a row in the
+    # Screening summary table -- lets VitrificationPage jump straight to
+    # Blend Partners with that tank pre-filled, instead of making the user
+    # re-find and re-type the same tank ID in a different tab.
+    jump_to_blend_partners = Signal(str)
+
     def __init__(self, app_window, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.app_window = app_window
@@ -76,35 +85,65 @@ class ScreeningTab(QWidget):
         note.setObjectName("SectionNote")
         top.addWidget(note)
         top.addStretch(1)
+        help_btn = QPushButton("?")
+        help_btn.setObjectName("HelpButton")
+        help_btn.setToolTip("What is this workspace for?")
+        help_btn.clicked.connect(lambda: show_workspace_help(self, 12, "Vitrification"))
+        top.addWidget(help_btn)
         export_btn = QPushButton("Export")
         export_btn.clicked.connect(self.export_tables)
         top.addWidget(export_btn)
         root.addLayout(top)
 
-        row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Basis"))
+        primary = QHBoxLayout()
+        primary.addWidget(QLabel("Basis"))
         self.basis_combo = QComboBox()
         self.basis_combo.addItems(BASIS_OPTIONS)
-        row1.addWidget(self.basis_combo)
-        self.weight_spins = _build_weight_spins(row1, vsci.SCREENING_WEIGHT_DEFAULTS, "screening")
+        self.basis_combo.setToolTip("Score tanks using elemental inventory or oxide-converted inventory.")
+        primary.addWidget(self.basis_combo)
+        build_btn = QPushButton("Build screening summary")
+        build_btn.setObjectName("Primary")
+        build_btn.clicked.connect(self.run_summary)
+        primary.addWidget(build_btn)
+        primary.addWidget(QLabel("Plot"))
+        self.plot_type_combo = QComboBox()
+        self.plot_type_combo.addItems(SCREENING_PLOT_TYPES)
+        self.plot_type_combo.setToolTip(
+            "Score breakdown: which weighted terms drove each tank's score.\n"
+            "Screening map: every tank plotted by chemical vs radiological inventory."
+        )
+        self.plot_type_combo.currentTextChanged.connect(lambda _: self._update_plot())
+        primary.addWidget(self.plot_type_combo)
+        primary.addStretch(1)
+        root.addLayout(primary)
+
+        # Score weights are tunable defaults, not something a first-time
+        # user needs to touch -- collapsed by default, with a live formula
+        # readout so the current weighting is never hidden, just the knobs.
+        self.advanced_section = CollapsibleSection("Advanced options (score weights)")
+        adv = self.advanced_section.content_layout()
+
+        weights_row = QHBoxLayout()
+        self.weight_spins = _build_weight_spins(weights_row, vsci.SCREENING_WEIGHT_DEFAULTS, "screening")
         reset_btn = QPushButton("Reset to defaults")
         reset_btn.clicked.connect(lambda: _reset_weight_spins(self.weight_spins, vsci.SCREENING_WEIGHT_DEFAULTS))
-        row1.addWidget(reset_btn)
-        row1.addStretch(1)
-        root.addLayout(row1)
+        weights_row.addWidget(reset_btn)
+        weights_row.addStretch(1)
+        adv.addLayout(weights_row)
 
         self.formula_label = QLabel("")
         self.formula_label.setObjectName("SectionNote")
         self.formula_label.setWordWrap(True)
-        root.addWidget(self.formula_label)
+        adv.addWidget(self.formula_label)
         for spin in self.weight_spins.values():
             spin.valueChanged.connect(self._update_formula_label)
         self._update_formula_label()
 
-        build_btn = QPushButton("Build screening summary")
-        build_btn.setObjectName("Primary")
-        build_btn.clicked.connect(self.run_summary)
-        root.addWidget(build_btn)
+        root.addWidget(self.advanced_section)
+
+        hint = QLabel("Double-click a tank in Screening summary to find blend partners for it.")
+        hint.setObjectName("SectionNote")
+        root.addWidget(hint)
 
         splitter = QSplitter()
         root.addWidget(splitter, 1)
@@ -114,6 +153,7 @@ class ScreeningTab(QWidget):
             view = DataFrameTableView(title=title_, max_rows_display=500)
             self._table_views[title_] = view
             self.tables.addTab(view, title_)
+        self._table_views["Screening summary"].doubleClicked.connect(self._on_summary_row_double_clicked)
         splitter.addWidget(self.tables)
         self.plot = PlotWidget()
         splitter.addWidget(self.plot)
@@ -143,8 +183,21 @@ class ScreeningTab(QWidget):
             self.dataset, weights=_current_weights(self.weight_spins), basis=self.basis_combo.currentText(),
         )
         self._table_views["Screening summary"].set_dataframe(self.summary_df)
-        ph.plot_vitrification_burden(self.plot, self.summary_df)
+        self._update_plot()
         self.app_window.statusBar().showMessage(f"Vitrification summary built for {len(self.summary_df):,} tank(s).")
+
+    def _update_plot(self) -> None:
+        if self.plot_type_combo.currentText() == "Screening map (kg vs Ci)":
+            ph.plot_vitrification_burden(self.plot, self.summary_df)
+        else:
+            ph.plot_vitrification_score_breakdown(self.plot, self.summary_df)
+
+    def _on_summary_row_double_clicked(self, index) -> None:
+        df = self._table_views["Screening summary"].dataframe()
+        if df.empty or not (0 <= index.row() < len(df)) or "WasteSiteId" not in df.columns:
+            return
+        tank_id = str(df.iloc[index.row()]["WasteSiteId"])
+        self.jump_to_blend_partners.emit(tank_id)
 
     def export_tables(self) -> None:
         if self.summary_df.empty or self.dataset is None:
@@ -180,53 +233,67 @@ class CandidateSearchTab(QWidget):
         title.setObjectName("SectionTitle")
         top.addWidget(title)
         top.addStretch(1)
+        help_btn = QPushButton("?")
+        help_btn.setObjectName("HelpButton")
+        help_btn.setToolTip("What is this workspace for?")
+        help_btn.clicked.connect(lambda: show_workspace_help(self, 12, "Vitrification"))
+        top.addWidget(help_btn)
         export_btn = QPushButton("Export")
         export_btn.clicked.connect(self.export_tables)
         top.addWidget(export_btn)
         root.addLayout(top)
 
-        row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Target elements"))
+        primary = QHBoxLayout()
+        primary.addWidget(QLabel("Target elements"))
         self.target_edit = QLineEdit("Cs, Sr, Tc, I")
-        row1.addWidget(self.target_edit)
-        row1.addWidget(QLabel("Penalty elements"))
-        self.penalty_edit = QLineEdit("S, Cl, F, I, Cr, Mo, Tc")
-        row1.addWidget(self.penalty_edit)
-        row1.addWidget(QLabel("Required"))
-        self.required_edit = QLineEdit("")
-        self.required_edit.setMaximumWidth(120)
-        row1.addWidget(self.required_edit)
-        root.addLayout(row1)
-
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Basis"))
-        self.basis_combo = QComboBox()
-        self.basis_combo.addItems(BASIS_OPTIONS)
-        row2.addWidget(self.basis_combo)
-        row2.addWidget(QLabel("min kg"))
-        self.min_kg_spin = QDoubleSpinBox()
-        self.min_kg_spin.setRange(0.0, 1e12)
-        self.min_kg_spin.setDecimals(3)
-        row2.addWidget(self.min_kg_spin)
-        row2.addWidget(QLabel("top N"))
-        self.top_n_spin = QSpinBox()
-        self.top_n_spin.setRange(1, 500)
-        self.top_n_spin.setValue(40)
-        row2.addWidget(self.top_n_spin)
-        root.addLayout(row2)
-
-        row3 = QHBoxLayout()
-        self.weight_spins = _build_weight_spins(row3, vsci.CANDIDATE_WEIGHT_DEFAULTS, "candidate")
-        reset_btn = QPushButton("Reset to defaults")
-        reset_btn.clicked.connect(lambda: _reset_weight_spins(self.weight_spins, vsci.CANDIDATE_WEIGHT_DEFAULTS))
-        row3.addWidget(reset_btn)
-        row3.addStretch(1)
-        root.addLayout(row3)
-
+        self.target_edit.setToolTip("Elements a good candidate tank should be rich in.")
+        primary.addWidget(self.target_edit)
         run_btn = QPushButton("Rank vitrification candidates")
         run_btn.setObjectName("Primary")
         run_btn.clicked.connect(self.run_candidates)
-        root.addWidget(run_btn)
+        primary.addWidget(run_btn)
+        primary.addStretch(1)
+        root.addLayout(primary)
+
+        self.advanced_section = CollapsibleSection("Advanced options")
+        adv = self.advanced_section.content_layout()
+
+        adv_row1 = QHBoxLayout()
+        adv_row1.addWidget(QLabel("Penalty elements"))
+        self.penalty_edit = QLineEdit("S, Cl, F, I, Cr, Mo, Tc")
+        self.penalty_edit.setToolTip("Elements that count against a tank's score if present.")
+        adv_row1.addWidget(self.penalty_edit)
+        adv_row1.addWidget(QLabel("Required"))
+        self.required_edit = QLineEdit("")
+        self.required_edit.setMaximumWidth(120)
+        self.required_edit.setToolTip("Elements a tank must contain to be included at all.")
+        adv_row1.addWidget(self.required_edit)
+        adv_row1.addWidget(QLabel("Basis"))
+        self.basis_combo = QComboBox()
+        self.basis_combo.addItems(BASIS_OPTIONS)
+        adv_row1.addWidget(self.basis_combo)
+        adv_row1.addWidget(QLabel("min kg"))
+        self.min_kg_spin = QDoubleSpinBox()
+        self.min_kg_spin.setRange(0.0, 1e12)
+        self.min_kg_spin.setDecimals(3)
+        adv_row1.addWidget(self.min_kg_spin)
+        adv_row1.addWidget(QLabel("top N"))
+        self.top_n_spin = QSpinBox()
+        self.top_n_spin.setRange(1, 500)
+        self.top_n_spin.setValue(40)
+        adv_row1.addWidget(self.top_n_spin)
+        adv_row1.addStretch(1)
+        adv.addLayout(adv_row1)
+
+        weights_row = QHBoxLayout()
+        self.weight_spins = _build_weight_spins(weights_row, vsci.CANDIDATE_WEIGHT_DEFAULTS, "candidate")
+        reset_btn = QPushButton("Reset to defaults")
+        reset_btn.clicked.connect(lambda: _reset_weight_spins(self.weight_spins, vsci.CANDIDATE_WEIGHT_DEFAULTS))
+        weights_row.addWidget(reset_btn)
+        weights_row.addStretch(1)
+        adv.addLayout(weights_row)
+
+        root.addWidget(self.advanced_section)
 
         splitter = QSplitter()
         root.addWidget(splitter, 1)
@@ -284,39 +351,54 @@ class BlendPartnersTab(QWidget):
         title.setObjectName("SectionTitle")
         top.addWidget(title)
         top.addStretch(1)
+        help_btn = QPushButton("?")
+        help_btn.setObjectName("HelpButton")
+        help_btn.setToolTip("What is this workspace for?")
+        help_btn.clicked.connect(lambda: show_workspace_help(self, 12, "Vitrification"))
+        top.addWidget(help_btn)
         export_btn = QPushButton("Export")
         export_btn.clicked.connect(self.export_tables)
         top.addWidget(export_btn)
         root.addLayout(top)
 
-        row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Base tank"))
+        primary = QHBoxLayout()
+        primary.addWidget(QLabel("Base tank"))
         self.base_tank_combo = QComboBox()
         self.base_tank_combo.setEditable(True)
-        row1.addWidget(self.base_tank_combo)
-        row1.addWidget(QLabel("Basis"))
-        self.basis_combo = QComboBox()
-        self.basis_combo.addItems(BASIS_OPTIONS)
-        row1.addWidget(self.basis_combo)
-        row1.addWidget(QLabel("top N"))
-        self.top_n_spin = QSpinBox()
-        self.top_n_spin.setRange(1, 500)
-        self.top_n_spin.setValue(40)
-        row1.addWidget(self.top_n_spin)
-        root.addLayout(row1)
-
-        row2 = QHBoxLayout()
-        self.weight_spins = _build_weight_spins(row2, vsci.BLEND_WEIGHT_DEFAULTS, "blend")
-        reset_btn = QPushButton("Reset to defaults")
-        reset_btn.clicked.connect(lambda: _reset_weight_spins(self.weight_spins, vsci.BLEND_WEIGHT_DEFAULTS))
-        row2.addWidget(reset_btn)
-        row2.addStretch(1)
-        root.addLayout(row2)
-
+        self.base_tank_combo.setToolTip("Find tanks that best complement this tank's composition.")
+        primary.addWidget(self.base_tank_combo)
         run_btn = QPushButton("Find blend partners")
         run_btn.setObjectName("Primary")
         run_btn.clicked.connect(self.run_blend)
-        root.addWidget(run_btn)
+        primary.addWidget(run_btn)
+        primary.addStretch(1)
+        root.addLayout(primary)
+
+        self.advanced_section = CollapsibleSection("Advanced options")
+        adv = self.advanced_section.content_layout()
+
+        adv_row1 = QHBoxLayout()
+        adv_row1.addWidget(QLabel("Basis"))
+        self.basis_combo = QComboBox()
+        self.basis_combo.addItems(BASIS_OPTIONS)
+        adv_row1.addWidget(self.basis_combo)
+        adv_row1.addWidget(QLabel("top N"))
+        self.top_n_spin = QSpinBox()
+        self.top_n_spin.setRange(1, 500)
+        self.top_n_spin.setValue(40)
+        adv_row1.addWidget(self.top_n_spin)
+        adv_row1.addStretch(1)
+        adv.addLayout(adv_row1)
+
+        weights_row = QHBoxLayout()
+        self.weight_spins = _build_weight_spins(weights_row, vsci.BLEND_WEIGHT_DEFAULTS, "blend")
+        reset_btn = QPushButton("Reset to defaults")
+        reset_btn.clicked.connect(lambda: _reset_weight_spins(self.weight_spins, vsci.BLEND_WEIGHT_DEFAULTS))
+        weights_row.addWidget(reset_btn)
+        weights_row.addStretch(1)
+        adv.addLayout(weights_row)
+
+        root.addWidget(self.advanced_section)
 
         splitter = QSplitter()
         root.addWidget(splitter, 1)

@@ -15,9 +15,14 @@ from PySide6.QtWidgets import (
 )
 
 import overview_science as ov
+import plot_helpers as ph
+import tank_science as tsci
 from data_model import HanfordDataset
 from plot_helpers import composable
+from qt_help import show_workspace_help
 from qt_widgets import DataFrameTableView, PlotWidget
+
+PLOT_TYPES = ["Top elements by inventory", "Farm rollup by inventory"]
 
 
 @composable
@@ -58,11 +63,26 @@ class OverviewPage(QWidget):
         super().__init__(parent)
         self.app_window = app_window
         self.dataset: Optional[HanfordDataset] = None
+        self._top_elements_df = pd.DataFrame()
+        self._farm_rollup_df = pd.DataFrame()
+        self._unit_label = "All"
         self._build_ui()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
+
+        header = QHBoxLayout()
+        title = QLabel("Overview")
+        title.setObjectName("SectionTitle")
+        header.addWidget(title)
+        header.addStretch(1)
+        help_btn = QPushButton("?")
+        help_btn.setObjectName("HelpButton")
+        help_btn.setToolTip("What is this workspace for?")
+        help_btn.clicked.connect(lambda: show_workspace_help(self, 5, "Overview"))
+        header.addWidget(help_btn)
+        root.addLayout(header)
 
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Unit"))
@@ -74,6 +94,11 @@ class OverviewPage(QWidget):
         self.top_n_spin.setRange(5, 300)
         self.top_n_spin.setValue(40)
         controls.addWidget(self.top_n_spin)
+        controls.addWidget(QLabel("Plot"))
+        self.plot_type_combo = QComboBox()
+        self.plot_type_combo.addItems(PLOT_TYPES)
+        self.plot_type_combo.currentTextChanged.connect(lambda _: self._update_plot())
+        controls.addWidget(self.plot_type_combo)
         refresh_btn = QPushButton("Refresh overview")
         refresh_btn.setObjectName("Primary")
         refresh_btn.clicked.connect(self.refresh)
@@ -133,13 +158,49 @@ class OverviewPage(QWidget):
         self._table_views["Top analytes"].set_dataframe(ov.top_analytes(self.dataset, unit=unit, top_n=top_n))
         self._table_views["Waste phases"].set_dataframe(ov.phase_audit(self.dataset))
         self._table_views["Waste types"].set_dataframe(ov.type_audit(self.dataset))
-        self._table_views["Tank farms"].set_dataframe(ov.farm_audit(self.dataset))
+
+        farm_unit = self._farm_rollup_unit()
+        farm_rollup = tsci.farm_inventory_rollup(self.dataset, unit=farm_unit) if farm_unit else pd.DataFrame()
+        self._table_views["Tank farms"].set_dataframe(farm_rollup if not farm_rollup.empty else ov.farm_audit(self.dataset))
         self._table_views["Missing"].set_dataframe(ov.missing_audit(self.dataset))
         self._table_views["Raw preview"].set_dataframe(self.dataset.raw_preview(250))
 
-        _plot_top_elements(self.plot, top_elements, unit)
+        self._top_elements_df = top_elements
+        self._farm_rollup_df = farm_rollup
+        self._unit_label = unit
+        self._update_plot()
         if announce:
             self.app_window.statusBar().showMessage(f"Overview refreshed ({unit}, top {top_n}).")
+
+    def _farm_rollup_unit(self) -> Optional[str]:
+        """Farm rollup needs one concrete unit (kg and Ci can't be summed
+        together) -- honor an explicit kg/Ci choice, otherwise default to
+        kg (falling back to whatever's actually available) the same way
+        Quick Scan/Heatmaps default their own Unit picker."""
+        if self.dataset is None or not self.dataset.is_loaded():
+            return None
+        units = self.dataset.available_units()
+        if not units:
+            return None
+        current = self.unit_combo.currentText()
+        if current in units:
+            return current
+        return "kg" if "kg" in units else units[0]
+
+    def _update_plot(self) -> None:
+        plot_type = self.plot_type_combo.currentText()
+        if plot_type == "Farm rollup by inventory":
+            if self._farm_rollup_df.empty:
+                self.plot.show_message("No farm rollup data for this dataset.")
+                return
+            unit = self._farm_rollup_unit() or ""
+            ph.plot_barh(
+                self.plot, self._farm_rollup_df, "TankFarm", "Total_inventory",
+                f"Total inventory by tank farm ({unit})", f"Total inventory ({unit})",
+                top_n=50,
+            )
+        else:
+            _plot_top_elements(self.plot, self._top_elements_df, self._unit_label)
 
     def _export_debug_bundle(self) -> None:
         if self.dataset is None or not self.dataset.is_loaded():

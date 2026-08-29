@@ -144,3 +144,61 @@ class TestFarmHelpers:
 
     def test_tanks_in_none_farm_returns_all(self, sample_dataset):
         assert ts.tanks_in_farm(sample_dataset, None) == ["241-A-101", "241-AN-104"]
+
+
+class TestFarmInventoryRollup:
+    def test_kg_totals_match_manual_sum_per_farm(self, sample_dataset):
+        # Manual cross-check against the same rule the rest of this session
+        # has applied to every science-layer addition: filter the raw frame
+        # by hand and sum, then compare against the function's own output.
+        df = sample_dataset.require_df()
+        out = ts.farm_inventory_rollup(sample_dataset, unit="kg").set_index("TankFarm")
+
+        for farm, tank in [("A", "241-A-101"), ("AN", "241-AN-104")]:
+            manual_total = (
+                df.filter((df["TankFarm"] == farm) & (df["Units"] == "kg") & (df["Inventory"] > 0))
+                .get_column("Inventory").sum()
+            )
+            assert out.loc[farm, "Total_inventory"] == pytest.approx(manual_total)
+
+        assert out.loc["A", "Total_inventory"] == pytest.approx(60.5)  # Fe 50 + Cd 0.5 + Fe 10
+        assert out.loc["AN", "Total_inventory"] == pytest.approx(500.0)  # Na
+
+    def test_n_tanks_per_farm(self, sample_dataset):
+        out = ts.farm_inventory_rollup(sample_dataset, unit="kg").set_index("TankFarm")
+        assert out.loc["A", "N_tanks"] == 1
+        assert out.loc["AN", "N_tanks"] == 1
+
+    def test_dominant_waste_type_and_phase_by_inventory_not_row_count(self, sample_dataset):
+        # Farm A's kg rows: Fe=50 (Solid), Cd=0.5 (Liquid), Fe=10 (Liquid).
+        # Liquid has 2 rows vs Solid's 1, but Solid carries more inventory
+        # (50 > 10.5) -- dominance must follow inventory, not row count.
+        out = ts.farm_inventory_rollup(sample_dataset, unit="kg").set_index("TankFarm")
+        assert out.loc["A", "Dominant_waste_phase"] == "Solid"
+        assert out.loc["A", "Dominant_waste_type"] == "T1"
+        assert out.loc["AN", "Dominant_waste_phase"] == "Sludge"
+        assert out.loc["AN", "Dominant_waste_type"] == "T2"
+
+    def test_mean_inventory_per_tank(self, sample_dataset):
+        out = ts.farm_inventory_rollup(sample_dataset, unit="kg").set_index("TankFarm")
+        assert out.loc["A", "Mean_inventory_per_tank"] == pytest.approx(60.5)  # single tank in farm
+
+    def test_kg_and_ci_are_never_summed_together(self, sample_dataset):
+        kg_out = ts.farm_inventory_rollup(sample_dataset, unit="kg").set_index("TankFarm")
+        ci_out = ts.farm_inventory_rollup(sample_dataset, unit="Ci").set_index("TankFarm")
+        assert kg_out.loc["A", "Total_inventory"] == pytest.approx(60.5)
+        assert ci_out.loc["A", "Total_inventory"] == pytest.approx(100.012)  # Cs 100 + Pu 0.002 + TotalAlpha 0.01
+
+    def test_sorted_by_total_inventory_descending(self, sample_dataset):
+        out = ts.farm_inventory_rollup(sample_dataset, unit="kg")
+        assert out["TankFarm"].tolist() == ["AN", "A"]  # 500.0 > 60.5
+
+    def test_empty_when_unit_not_present(self, sample_dataset):
+        assert ts.farm_inventory_rollup(sample_dataset, unit="Bq").empty
+
+    def test_empty_when_no_tank_farm_column(self):
+        import data_model as dm
+        import polars as pl
+        dataset = dm.HanfordDataset()
+        dataset.df = pl.DataFrame({"WasteSiteId": ["241-A-101"], "Units": ["kg"], "Inventory": [1.0]})
+        assert ts.farm_inventory_rollup(dataset, unit="kg").empty

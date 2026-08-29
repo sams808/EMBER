@@ -18,7 +18,8 @@ import export_utils
 import plot_helpers as ph
 import tank_science as tsci
 from data_model import HanfordDataset
-from qt_widgets import DataFrameTableView, PlotWidget
+from qt_help import show_workspace_help
+from qt_widgets import CollapsibleSection, DataFrameTableView, PlotWidget
 
 PLOT_VALUES = ["Inventory_sum", "Fraction_of_tank_unit_inventory"]
 
@@ -41,6 +42,19 @@ class TankExplorerPage(QWidget):
         left = QWidget()
         left.setMaximumWidth(220)
         left_layout = QVBoxLayout(left)
+
+        header = QHBoxLayout()
+        title = QLabel("Tank Explorer")
+        title.setObjectName("SectionTitle")
+        header.addWidget(title)
+        header.addStretch(1)
+        help_btn = QPushButton("?")
+        help_btn.setObjectName("HelpButton")
+        help_btn.setToolTip("What is this workspace for?")
+        help_btn.clicked.connect(lambda: show_workspace_help(self, 8, "Tank Explorer"))
+        header.addWidget(help_btn)
+        left_layout.addLayout(header)
+
         left_layout.addWidget(QLabel("Farm"))
         self.farm_combo = QComboBox()
         self.farm_combo.addItem("All")
@@ -55,19 +69,25 @@ class TankExplorerPage(QWidget):
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(["kg", "Ci"])
         left_layout.addWidget(self.unit_combo)
-        left_layout.addWidget(QLabel("Top N"))
-        self.top_n_spin = QSpinBox()
-        self.top_n_spin.setRange(5, 300)
-        self.top_n_spin.setValue(35)
-        left_layout.addWidget(self.top_n_spin)
-        left_layout.addWidget(QLabel("Plot value"))
-        self.value_combo = QComboBox()
-        self.value_combo.addItems(PLOT_VALUES)
-        left_layout.addWidget(self.value_combo)
         run_btn = QPushButton("Run tank view")
         run_btn.setObjectName("Primary")
         run_btn.clicked.connect(self.run)
         left_layout.addWidget(run_btn)
+
+        self.advanced_section = CollapsibleSection("Advanced options")
+        adv = self.advanced_section.content_layout()
+        adv.addWidget(QLabel("Top N"))
+        self.top_n_spin = QSpinBox()
+        self.top_n_spin.setRange(5, 300)
+        self.top_n_spin.setValue(35)
+        self.top_n_spin.setToolTip("How many elements to show on the plot.")
+        adv.addWidget(self.top_n_spin)
+        adv.addWidget(QLabel("Plot value"))
+        self.value_combo = QComboBox()
+        self.value_combo.addItems(PLOT_VALUES)
+        adv.addWidget(self.value_combo)
+        left_layout.addWidget(self.advanced_section)
+
         export_btn = QPushButton("Export tables")
         export_btn.clicked.connect(self._export_tables)
         left_layout.addWidget(export_btn)

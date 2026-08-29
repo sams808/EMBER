@@ -1238,6 +1238,65 @@ def plot_element_network(panel, network_nodes: pd.DataFrame, network_edges: pd.D
 # plot_blend_scores.
 # ---------------------------------------------------------------------------
 
+_SCORE_CONTRIB_COLUMNS = {
+    "contrib_glass_former": ("glass-former", "#2c7a4b"),
+    "contrib_modifier": ("modifier", "#5a9bd4"),
+    "contrib_problem": ("problem elements", "#c1502e"),
+    "contrib_volatile": ("volatile/halide/sulfate", "#d9a441"),
+    "contrib_redox": ("redox-sensitive", "#8a6fb5"),
+}
+
+
+@composable
+def plot_vitrification_score_breakdown(panel, data: pd.DataFrame, title: str = "Score breakdown", top_n: int = 20) -> None:
+    """Stacked horizontal bars showing exactly how each tank's screening
+    score is built from its five weighted terms -- the direct fix for "the
+    score is a black box": instead of one unlabeled number, each tank's
+    bar shows the actual +/- contribution of glass-former, modifier,
+    problem, volatile, and redox content (tank_category_summary's own
+    contrib_* columns, so this can never drift out of sync with the real
+    score), with a tick mark at the net (clipped) score."""
+    required = list(_SCORE_CONTRIB_COLUMNS) + ["WasteSiteId", "Vitrification_screening_score_proxy"]
+    if data is None or data.empty or any(c not in data for c in required):
+        panel.show_message("No score breakdown data")
+        return
+    pdf = data.copy()
+    for c in _SCORE_CONTRIB_COLUMNS:
+        pdf[c] = numeric_plot_series(pdf[c]).fillna(0.0)
+    pdf = pdf.sort_values("Vitrification_screening_score_proxy", ascending=False).head(int(top_n))
+    pdf = pdf.iloc[::-1]  # barh draws bottom-to-top; reverse for highest score at the top
+
+    ax = panel.reset_axes()
+    height = min(max(4.5, len(pdf) * 0.32), 16.0)
+    width = panel.figure.get_size_inches()[0]
+    panel.set_figure_size_inches(width, height)
+
+    labels = make_unique_plot_labels(pdf, "WasteSiteId")
+    y = np.arange(len(pdf))
+    left_pos = np.zeros(len(pdf))
+    left_neg = np.zeros(len(pdf))
+    for col, (label, color) in _SCORE_CONTRIB_COLUMNS.items():
+        vals = pdf[col].to_numpy(dtype=float)
+        lefts = np.where(vals >= 0, left_pos, left_neg)
+        ax.barh(y, vals, left=lefts, height=0.7, color=color, label=label)
+        left_pos = np.where(vals >= 0, left_pos + vals, left_pos)
+        left_neg = np.where(vals < 0, left_neg + vals, left_neg)
+
+    ax.scatter(
+        pdf["Vitrification_screening_score_proxy"].to_numpy(dtype=float), y,
+        color="black", marker="|", s=220, linewidths=1.6, zorder=5, label="net score",
+    )
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels, fontsize=8 if len(pdf) <= 30 else 6)
+    ax.axvline(0, color="0.4", linewidth=0.8)
+    ax.set_xlabel("Contribution to screening score")
+    ax.set_title(title)
+    ax.grid(True, axis="x", alpha=0.25)
+    ax.legend(fontsize=8, loc="lower right", framealpha=0.9)
+    panel.figure.tight_layout()
+    panel.canvas.draw_idle()
+
+
 @composable
 def plot_vitrification_burden(panel, data: pd.DataFrame, title: str = "Vitrification screening map") -> None:
     required = ["Total_kg_inventory", "Total_Ci_inventory", "frac_problem_elements_proxy", "frac_glass_former_or_intermediate", "WasteSiteId"]

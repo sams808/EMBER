@@ -129,3 +129,50 @@ def tanks_in_farm(dataset: HanfordDataset, farm: Optional[str]) -> List[str]:
         return dataset.available_tanks()
     df = dataset.require_df().filter(pl.col("TankFarm") == farm)
     return sorted({str(t) for t in df.get_column("WasteSiteId").drop_nulls().unique().to_list()})
+
+
+def farm_inventory_rollup(dataset: HanfordDataset, unit: str = "kg") -> pd.DataFrame:
+    """One row per TankFarm: tank count, total inventory in a single unit
+    (kg and Ci are never summed together -- caller picks one), and which
+    waste type/phase carries the most inventory in that farm. Unlike
+    overview_science.farm_audit (row/tank counts only, unit-blind), this is
+    the composition-aware rollup: "how much waste, of what kind, is sitting
+    in each farm" rather than just "how many rows/tanks does each farm
+    have"."""
+    df = dataset.require_df()
+    required = {"TankFarm", "Units", "Inventory", "WasteType", "WastePhase", "WasteSiteId"}
+    if not required.issubset(set(df.columns)):
+        return pd.DataFrame()
+    df = df.filter(
+        (pl.col("Units") == unit) & pl.col("TankFarm").is_not_null() & (pl.col("Inventory") > 0)
+    )
+    if df.is_empty():
+        return pd.DataFrame()
+
+    totals = df.group_by("TankFarm").agg([
+        pl.col("WasteSiteId").n_unique().alias("N_tanks"),
+        pl.col("Inventory").sum().alias("Total_inventory"),
+        pl.col("WasteType").n_unique().alias("N_waste_types"),
+        pl.col("WastePhase").n_unique().alias("N_waste_phases"),
+    ])
+
+    def _dominant(value_col: str, out_col: str) -> pl.DataFrame:
+        # Sort each farm's (value_col) groups by summed inventory descending,
+        # then keep the first row per farm -- the highest-inventory value,
+        # not just the most frequently occurring row.
+        return (
+            df.group_by(["TankFarm", value_col])
+            .agg(pl.col("Inventory").sum().alias("_sum"))
+            .sort(["TankFarm", "_sum"], descending=[False, True])
+            .unique(subset=["TankFarm"], keep="first")
+            .select(["TankFarm", pl.col(value_col).alias(out_col)])
+        )
+
+    out = (
+        totals
+        .join(_dominant("WasteType", "Dominant_waste_type"), on="TankFarm", how="left")
+        .join(_dominant("WastePhase", "Dominant_waste_phase"), on="TankFarm", how="left")
+        .with_columns((pl.col("Total_inventory") / pl.col("N_tanks")).alias("Mean_inventory_per_tank"))
+        .sort("Total_inventory", descending=True)
+    )
+    return out.to_pandas()

@@ -108,6 +108,35 @@ class TestTankCategorySummary:
         assert (out["RelativeActivityBin"] == "not enough tanks").all()
 
 
+class TestScoreContributionColumns:
+    """The five contrib_* columns exist so the UI can show *why* a tank
+    scored where it did (a breakdown plot) instead of just the opaque
+    total -- verify they're the actual per-term products, not just present,
+    and that they really do sum to the score (same hand-computed tank101
+    numbers as test_default_weights_score_hand_computed above)."""
+
+    def test_contributions_are_weight_times_fraction(self, vitrification_dataset):
+        out = vsci.tank_category_summary(vitrification_dataset).set_index("WasteSiteId")
+        row = out.loc["241-A-101"]
+        assert row["contrib_glass_former"] == pytest.approx(60 * (10 / 17))
+        assert row["contrib_modifier"] == pytest.approx(25 * (5 / 17))
+        assert row["contrib_problem"] == pytest.approx(-45 * (2 / 17))
+        assert row["contrib_volatile"] == pytest.approx(-25 * 0)
+        assert row["contrib_redox"] == pytest.approx(-10 * (2 / 17))
+
+    def test_contributions_sum_to_the_unclipped_score(self, vitrification_dataset):
+        out = vsci.tank_category_summary(vitrification_dataset)
+        contrib_cols = ["contrib_glass_former", "contrib_modifier", "contrib_problem", "contrib_volatile", "contrib_redox"]
+        summed = out[contrib_cols].sum(axis=1)
+        # None of this fixture's tanks hit the +/-100 clip, so the sum
+        # should match the (clipped) score exactly for every row.
+        assert (summed - out["Vitrification_screening_score_proxy"]).abs().max() == pytest.approx(0.0, abs=1e-9)
+
+    def test_custom_weights_flow_through_to_contributions(self, vitrification_dataset):
+        out = vsci.tank_category_summary(vitrification_dataset, weights={"glass_former_weight": 100.0}).set_index("WasteSiteId")
+        assert out.loc["241-A-103", "contrib_glass_former"] == pytest.approx(100.0)
+
+
 class TestOxideGlassFormerFractions:
     def test_matches_independent_oxide_science_computation(self, vitrification_dataset):
         fractions = vsci.oxide_glass_former_fractions(vitrification_dataset)

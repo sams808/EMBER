@@ -42,9 +42,9 @@ databases:
 by, affiliated with, or endorsed by PNNL or the U.S. Department of
 Energy.**
 
-> **Credit placeholder:** lab/PI attribution below is a starting draft
-> (mirrors the sibling Dataapp/PRISM project's credits) — confirm the exact
-> wording before treating it as final.
+Developed by Sam Soudani, in the McCloy group at Washington State
+University, with support from the U.S. Department of Energy (DOE).
+`github.com/sams808/EMBER` · MIT License.
 
 ---
 
@@ -86,7 +86,7 @@ without editing anything.
 
 ## 2. General architecture
 
-The nav sidebar has 9 workspaces:
+The nav sidebar has 8 workspaces:
 
 1. **Overview**
 2. **Element Explorer**
@@ -96,7 +96,18 @@ The nav sidebar has 9 workspaces:
 6. **Correlations** — Quick Scan / Association Workbench (kg) / Structure sub-tabs
 7. **Vitrification** — Screening / Oxide Chemistry / Candidate Search / Blend Partners sub-tabs
 8. **Figure Composer** — combine any of the plots above into one multi-panel publication figure
-9. **Debug / Export**
+
+**Debug / Export** (§11) isn't a workspace — it's a troubleshooting utility
+(live log viewer, one-click debug-bundle export), reached from **Help →
+Debug / Export…** instead of the nav rail.
+
+Each workspace keeps only its 2-4 always-needed controls visible; anything
+else (thresholds, score weights, per-plot-type tuning) is collapsed under
+an **"Advanced options"** toggle — click it to expand, nothing is ever
+removed, just one click deeper. A small **`?`** button on each workspace
+opens that workspace's own section of this notice, so you don't have to
+scroll to find it. **Help → Getting Started…** re-opens the "what are you
+trying to do?" picker shown on first launch, any time.
 
 Most plots can be saved directly via the plot panel's own toolbar
 (PNG/PDF/SVG, pan/zoom). Every workspace also exports the actual data
@@ -345,6 +356,9 @@ New capability, no equivalent in earlier versions of this tool:
 ---
 
 ## 11. Debug / Export
+
+Reached from **Help → Debug / Export…**, not the nav rail — a
+troubleshooting utility rather than a workspace.
 
 - **Export global debug bundle** — writes a folder of small audit CSVs
   (overview, units/missing/phase/type/farm audits, top elements/analytes,
@@ -832,9 +846,9 @@ regulatory determinations.
 
 ## 18. Credits
 
-Developed in the NOME group, Washington State University.
-Supported by the U.S. Department of Energy.
-Thanks to Prof. John S. McCloy.
+Developed by Sam Soudani, in the McCloy group at Washington State
+University, with support from the U.S. Department of Energy (DOE).
+`github.com/sams808/EMBER` · MIT License.
 
 Composition data via PNNL's PHOENIX (see the citation at the top of this
 notice). Built on polars, pandas, numpy, matplotlib, seaborn, scipy,

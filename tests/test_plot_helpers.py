@@ -439,6 +439,46 @@ class TestPlotVitrificationBurden:
         assert panel.ax.get_title() == "Vitrification screening map"
 
 
+class TestPlotVitrificationScoreBreakdown:
+    def test_missing_columns_shows_message(self):
+        panel = FakePanel()
+        ph.plot_vitrification_score_breakdown(panel, pd.DataFrame({"x": [1]}))
+        assert panel.messages == ["No score breakdown data"]
+
+    def test_empty_dataframe_shows_message(self):
+        panel = FakePanel()
+        cols = list(ph._SCORE_CONTRIB_COLUMNS) + ["WasteSiteId", "Vitrification_screening_score_proxy"]
+        ph.plot_vitrification_score_breakdown(panel, pd.DataFrame({c: [] for c in cols}))
+        assert panel.messages == ["No score breakdown data"]
+
+    def _sample_df(self):
+        return pd.DataFrame({
+            "WasteSiteId": ["T1", "T2"],
+            "contrib_glass_former": [40.0, 5.0], "contrib_modifier": [10.0, 5.0],
+            "contrib_problem": [-5.0, -40.0], "contrib_volatile": [0.0, -20.0],
+            "contrib_redox": [-2.0, -3.0], "Vitrification_screening_score_proxy": [43.0, -53.0],
+        })
+
+    def test_renders_with_real_plot_widget(self, qtbot):
+        # set_figure_size_inches()/set_yticks()/legend() need a real Figure
+        # and Axes, not the FakePanel stand-in used for the checks above.
+        from qt_widgets import PlotWidget
+        panel = PlotWidget()
+        qtbot.addWidget(panel)
+        ph.plot_vitrification_score_breakdown(panel, self._sample_df())
+        qtbot.wait(20)
+        assert panel.ax.get_title() == "Score breakdown"
+        assert [t.get_text() for t in panel.ax.get_yticklabels()] == ["T2", "T1"]  # T1 (higher score) on top
+
+    def test_top_n_limits_tank_count(self, qtbot):
+        from qt_widgets import PlotWidget
+        panel = PlotWidget()
+        qtbot.addWidget(panel)
+        ph.plot_vitrification_score_breakdown(panel, self._sample_df(), top_n=1)
+        qtbot.wait(20)
+        assert [t.get_text() for t in panel.ax.get_yticklabels()] == ["T1"]  # only the higher-scoring tank
+
+
 class TestPlotCandidateScores:
     def test_missing_columns_shows_message(self):
         panel = FakePanel()

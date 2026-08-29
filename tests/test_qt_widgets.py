@@ -1,8 +1,69 @@
 import numpy as np
 import pandas as pd
 
-from qt_widgets import DataFrameTableModel, PlotWidget, StatusLogger, _format_cell
+from qt_widgets import CollapsibleSection, DataFrameTableModel, PlotWidget, StatusLogger, _format_cell
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QHBoxLayout, QLabel
+
+
+class TestCollapsibleSection:
+    """isHidden() (the widget's own explicit visibility flag) rather than
+    isVisible() (recursive: requires the whole ancestor chain to actually
+    be shown on screen, which these tests never do) -- isVisible() would
+    read False here regardless of what setVisible() was called with."""
+
+    def test_collapsed_by_default(self, qtbot):
+        section = CollapsibleSection("Advanced options")
+        qtbot.addWidget(section)
+        assert section.is_expanded() is False
+        assert section.content.isHidden() is True
+
+    def test_clicking_header_expands_content(self, qtbot):
+        section = CollapsibleSection("Advanced options")
+        qtbot.addWidget(section)
+        section.toggle_button.click()
+        assert section.is_expanded() is True
+        assert section.content.isHidden() is False
+
+    def test_clicking_twice_collapses_again(self, qtbot):
+        section = CollapsibleSection("Advanced options")
+        qtbot.addWidget(section)
+        section.toggle_button.click()
+        section.toggle_button.click()
+        assert section.is_expanded() is False
+
+    def test_set_expanded_true_shows_content_without_a_click(self, qtbot):
+        section = CollapsibleSection("Advanced options")
+        qtbot.addWidget(section)
+        section.set_expanded(True)
+        assert section.is_expanded() is True
+        assert section.content.isHidden() is False
+
+    def test_toggled_signal_emits_new_state(self, qtbot):
+        section = CollapsibleSection("Advanced options")
+        qtbot.addWidget(section)
+        received = []
+        section.toggled.connect(received.append)
+        section.toggle_button.click()
+        section.toggle_button.click()
+        assert received == [True, False]
+
+    def test_content_layout_accepts_caller_widgets(self, qtbot):
+        section = CollapsibleSection("Advanced options")
+        qtbot.addWidget(section)
+        row = QHBoxLayout()
+        label = QLabel("min overlap")
+        row.addWidget(label)
+        section.content_layout().addLayout(row)
+        section.set_expanded(True)
+        assert label.isHidden() is False
+
+    def test_arrow_indicates_state(self, qtbot):
+        section = CollapsibleSection("Advanced options")
+        qtbot.addWidget(section)
+        assert section.toggle_button.arrowType() == Qt.RightArrow
+        section.set_expanded(True)
+        assert section.toggle_button.arrowType() == Qt.DownArrow
 
 
 class TestPlotWidgetSetFigureSizeInches:

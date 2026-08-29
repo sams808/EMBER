@@ -25,7 +25,8 @@ import glass_science as gscience
 import oxide_science as oxsci
 import tank_science as tsci
 from data_model import HanfordDataset
-from qt_widgets import DataFrameTableView
+from qt_help import show_workspace_help
+from qt_widgets import CollapsibleSection, DataFrameTableView
 
 SOURCES_NOTE = (
     "Screening tool, not an official glass model. Λ: Rodriguez & McCloy, PNNL-20184 (2011) Table B.1. "
@@ -53,10 +54,22 @@ class OxideChemistryTab(QWidget):
         left.setObjectName("Card")
         left.setMaximumWidth(420)
         ll = QVBoxLayout(left)
+
+        header = QHBoxLayout()
         title = QLabel("Oxide Chemistry")
         title.setObjectName("SectionTitle")
-        ll.addWidget(title)
+        header.addWidget(title)
+        header.addStretch(1)
+        help_btn = QPushButton("?")
+        help_btn.setObjectName("HelpButton")
+        help_btn.setToolTip("What is this workspace for?")
+        help_btn.clicked.connect(lambda: show_workspace_help(self, 12, "Vitrification"))
+        header.addWidget(help_btn)
+        ll.addLayout(header)
 
+        # Primary path: pick a farm, pick tanks, build. Oxide-mapping
+        # overrides, NBO/T roles, the envelope check, and GlassNet are all
+        # tuning/extra steps on top of that -- collapsed by default.
         ll.addWidget(QLabel("Farm"))
         self.farm_combo = QComboBox()
         self.farm_combo.addItem("All")
@@ -72,21 +85,24 @@ class OxideChemistryTab(QWidget):
         build_btn.clicked.connect(self.build_composition)
         ll.addWidget(build_btn)
 
-        ll.addWidget(QLabel("Element -> assumed oxide (multivalent elements offer alternatives; any cell is editable)"))
+        self.advanced_section = CollapsibleSection("Advanced options (oxide mapping, NBO/T roles, envelope, GlassNet)")
+        adv = self.advanced_section.content_layout()
+
+        adv.addWidget(QLabel("Element -> assumed oxide (multivalent elements offer alternatives; any cell is editable)"))
         self.oxide_map_table = QTableWidget(0, 2)
         self.oxide_map_table.setHorizontalHeaderLabels(["Element", "Assumed oxide"])
         self.oxide_map_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.oxide_map_table.setMaximumHeight(170)
-        ll.addWidget(self.oxide_map_table)
+        adv.addWidget(self.oxide_map_table)
 
-        ll.addWidget(QLabel("Oxide role (for NBO/T)"))
+        adv.addWidget(QLabel("Oxide role (for NBO/T)"))
         self.role_table = QTableWidget(0, 2)
         self.role_table.setHorizontalHeaderLabels(["Oxide", "Role"])
         self.role_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.role_table.setMaximumHeight(140)
-        ll.addWidget(self.role_table)
+        adv.addWidget(self.role_table)
 
-        ll.addWidget(QLabel("Envelope (user-supplied; empty by default)"))
+        adv.addWidget(QLabel("Envelope (user-supplied; empty by default)"))
         env_btn_row = QHBoxLayout()
         add_row_btn = QPushButton("Add row")
         add_row_btn.clicked.connect(self._add_envelope_row)
@@ -100,25 +116,27 @@ class OxideChemistryTab(QWidget):
         save_env_btn = QPushButton("Save JSON…")
         save_env_btn.clicked.connect(self.save_envelope)
         env_btn_row.addWidget(save_env_btn)
-        ll.addLayout(env_btn_row)
+        adv.addLayout(env_btn_row)
         self.envelope_table = QTableWidget(0, 3)
         self.envelope_table.setHorizontalHeaderLabels(["Oxide", "Min wt%", "Max wt%"])
         self.envelope_table.setMaximumHeight(140)
-        ll.addWidget(self.envelope_table)
+        adv.addWidget(self.envelope_table)
 
         recompute_btn = QPushButton("Recompute basicity / NBO-T / envelope")
         recompute_btn.clicked.connect(self.recompute_summary)
-        ll.addWidget(recompute_btn)
+        adv.addWidget(recompute_btn)
 
         self.gn_btn = QPushButton("GlassNet predict (selected sample)")
         self.gn_btn.clicked.connect(self.run_glassnet)
-        ll.addWidget(self.gn_btn)
+        adv.addWidget(self.gn_btn)
         if not gscience.glassnet_available():
             self.gn_btn.setEnabled(False)
             self.gn_btn.setToolTip(
                 "pip install glasspy (needs PyTorch) to enable GlassNet predictions. "
                 "Not available in the packaged exe."
             )
+
+        ll.addWidget(self.advanced_section)
 
         export_btn = QPushButton("Export all tables")
         export_btn.clicked.connect(self.export_tables)

@@ -1,5 +1,5 @@
 """
-Shared pytest fixtures: data fixtures (below) plus three autouse Qt
+Shared pytest fixtures: data fixtures (below) plus four autouse Qt
 fixtures that keep the Qt-level tests deterministic and non-blocking:
 
 - _synchronous_workers: qt_worker.run_in_thread executes inline during
@@ -8,6 +8,9 @@ fixtures that keep the Qt-level tests deterministic and non-blocking:
   real per-user registry values never leak into or out of a test.
 - _prevent_blocking_qt_dialogs: QMessageBox convenience popups resolve
   immediately instead of blocking on user input under pytest.
+- _prevent_blocking_getting_started_dialog: same idea, for the one
+  custom (non-QMessageBox) modal that auto-shows on a fresh QSettings
+  state -- see its own docstring below.
 
 qt_shell.py and friends must import QSettings *locally* inside the methods
 that use it (not once at module level) for _hermetic_qsettings to actually
@@ -282,4 +285,23 @@ def _prevent_blocking_qt_dialogs(monkeypatch):
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.Ok))
     monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: QMessageBox.Ok))
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _prevent_blocking_getting_started_dialog(monkeypatch):
+    """GettingStartedDialog.exec() is a real, custom modal -- not a
+    QMessageBox convenience popup, so _prevent_blocking_qt_dialogs above
+    doesn't cover it -- that qt_shell.EmberMainWindow.__init__ auto-shows
+    on a fresh QSettings state via QTimer.singleShot(0, ...). Without this,
+    ANY test that constructs a real EmberMainWindow and pumps its event
+    loop (e.g. via qtbot.wait()) blocks forever waiting for a click that
+    will never come -- confirmed by hanging a real test run building this
+    feature. Neutralized to behave like the user clicked "Skip"; tests
+    that need to interact with the dialog itself monkeypatch
+    qt_shell.GettingStartedDialog directly instead (see test_qt_shell.py)."""
+    from PySide6.QtWidgets import QDialog
+    from qt_help import GettingStartedDialog
+
+    monkeypatch.setattr(GettingStartedDialog, "exec", lambda self: QDialog.Rejected)
     yield

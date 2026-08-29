@@ -23,7 +23,7 @@ from matplotlib.figure import Figure
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QFileDialog, QLabel, QMenu, QMessageBox,
-    QTableView, QVBoxLayout, QWidget,
+    QTableView, QToolButton, QVBoxLayout, QWidget,
 )
 
 
@@ -246,6 +246,57 @@ class PlotWidget(QWidget):
         render_fn, args, kwargs = self._last_recipe
         caption = self.suggested_caption()
         store.add_recipe(render_fn, args, kwargs, caption, source=caption)
+
+
+class CollapsibleSection(QWidget):
+    """A clickable '#SectionTitle'-style header that expands/collapses a
+    content area below it -- the building block every workspace uses to
+    hide its long tail of rarely-needed controls (min-overlap thresholds,
+    plot-count caps, ...) behind one click instead of showing everything
+    at equal visual weight all the time. Collapsed by default; callers add
+    their own rows to content_layout()."""
+
+    toggled = Signal(bool)
+
+    def __init__(self, title: str = "Advanced options", parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+
+        self.toggle_button = QToolButton(self)
+        self.toggle_button.setObjectName("CollapsibleHeader")
+        self.toggle_button.setText(title)
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setChecked(False)
+        self.toggle_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.toggle_button.setArrowType(Qt.RightArrow)
+        self.toggle_button.setCursor(Qt.PointingHandCursor)
+        self.toggle_button.clicked.connect(self._on_toggled)
+        outer.addWidget(self.toggle_button)
+
+        self.content = QWidget(self)
+        self.content.setVisible(False)
+        self._content_layout = QVBoxLayout(self.content)
+        self._content_layout.setContentsMargins(4, 4, 4, 4)
+        self._content_layout.setSpacing(6)
+        outer.addWidget(self.content)
+
+    def content_layout(self) -> QVBoxLayout:
+        """Add rows (e.g. QHBoxLayout instances via addLayout) to this."""
+        return self._content_layout
+
+    def is_expanded(self) -> bool:
+        return self.toggle_button.isChecked()
+
+    def set_expanded(self, expanded: bool) -> None:
+        self.toggle_button.setChecked(expanded)
+        self._on_toggled(expanded)
+
+    def _on_toggled(self, checked: bool) -> None:
+        self.content.setVisible(checked)
+        self.toggle_button.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+        self.toggled.emit(checked)
 
 
 class StatusLogger(QObject):

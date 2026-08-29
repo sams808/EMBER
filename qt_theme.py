@@ -99,6 +99,21 @@ def build_stylesheet(palette: dict = PALETTE) -> str:
         font-size: 12px;
         color: {p['muted']};
     }}
+    QToolButton#CollapsibleHeader {{
+        background: transparent;
+        border: none;
+        padding: 4px 2px;
+        font-size: 12.5px;
+        font-weight: 600;
+        color: {p['muted']};
+        text-align: left;
+    }}
+    QToolButton#CollapsibleHeader:hover {{
+        color: {p['accent']};
+    }}
+    QToolButton#CollapsibleHeader:checked {{
+        color: {p['ink']};
+    }}
     QPushButton {{
         background: {p['card']};
         border: 1px solid {p['border']};
@@ -120,6 +135,21 @@ def build_stylesheet(palette: dict = PALETTE) -> str:
     }}
     QPushButton#Primary:hover {{
         background: {p['accent_hover']};
+    }}
+    QPushButton#HelpButton {{
+        border-radius: 12px;
+        padding: 2px 0px;
+        min-width: 24px;
+        max-width: 24px;
+        min-height: 24px;
+        max-height: 24px;
+        font-weight: 600;
+        color: {p['muted']};
+    }}
+    QPushButton#HelpButton:hover {{
+        color: {p['accent_ink']};
+        background: {p['accent']};
+        border-color: {p['accent_hover']};
     }}
     QTableView, QTreeView, QTableWidget {{
         background: {p['card']};

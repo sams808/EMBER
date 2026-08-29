@@ -33,6 +33,17 @@ class VitrificationPage(QWidget):
         self.blend_tab = BlendPartnersTab(app_window)
         self.tabs.addTab(self.blend_tab, "Blend Partners")
 
+        self.screening_tab.jump_to_blend_partners.connect(self._jump_to_blend_partners)
+
+    def _jump_to_blend_partners(self, tank_id: str) -> None:
+        """Double-clicking a tank in Screening summary lands here with a
+        real tank -- the connective tissue that lets "I found a promising
+        tank" flow straight into "what would blend well with it" without
+        re-entering the tank ID in a different tab."""
+        self.tabs.setCurrentWidget(self.blend_tab)
+        self.blend_tab.base_tank_combo.setCurrentText(tank_id)
+        self.blend_tab.run_blend()
+
     def on_dataset_changed(self, dataset: HanfordDataset) -> None:
         self.screening_tab.on_dataset_changed(dataset)
         self.oxide_tab.on_dataset_changed(dataset)

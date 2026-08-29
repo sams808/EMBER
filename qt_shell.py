@@ -15,7 +15,7 @@ from typing import Dict, Optional
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QFileDialog, QListWidget, QListWidgetItem,
+    QApplication, QCheckBox, QDialog, QFileDialog, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QStackedWidget, QToolBar, QVBoxLayout, QWidget,
 )
 
@@ -25,7 +25,7 @@ from qt_debug import DebugPage
 from qt_explorer import ExplorerPage
 from qt_figure_composer import FigureComposerPage
 from qt_heatmap import HeatmapPage
-from qt_help import ABOUT_HTML, APP_NAME, APP_VERSION, HelpDialog, asset_path
+from qt_help import ABOUT_HTML, APP_NAME, APP_VERSION, GettingStartedDialog, HelpDialog, asset_path
 from qt_overview import OverviewPage
 from qt_tank_attributes import TankAttributesPage
 from qt_tank_explorer import TankExplorerPage
@@ -41,12 +41,25 @@ NAV_HEATMAPS = "Heatmaps"
 NAV_CORRELATIONS = "Correlations"
 NAV_VITRIFICATION = "Vitrification"
 NAV_FIGURE_COMPOSER = "Figure Composer"
-NAV_DEBUG = "Debug / Export"
 
 NAV_ITEMS = [
     NAV_OVERVIEW, NAV_EXPLORER, NAV_TANK_ATTRS, NAV_TANK_EXPLORER,
-    NAV_HEATMAPS, NAV_CORRELATIONS, NAV_VITRIFICATION, NAV_FIGURE_COMPOSER, NAV_DEBUG,
+    NAV_HEATMAPS, NAV_CORRELATIONS, NAV_VITRIFICATION, NAV_FIGURE_COMPOSER,
 ]
+
+# One-line, plain-language "what is this for" shown on hover -- the nav
+# rail used to be plain text with no orientation for a first-time user;
+# this is the cheapest, always-visible form of self-explanation.
+NAV_DESCRIPTIONS: Dict[str, str] = {
+    NAV_OVERVIEW: "Start here: dataset audit -- units, top elements/analytes, waste-phase/type/farm breakdowns, missing data.",
+    NAV_EXPLORER: "Search one element or analyte: which tanks have it, what else tends to be there, typical composition.",
+    NAV_TANK_ATTRS: "Browse tank engineering metadata -- type, capacity, integrity, status -- joined from the attributes file.",
+    NAV_TANK_EXPLORER: "Compare full composition across several chosen tanks side by side.",
+    NAV_HEATMAPS: "Tank x element inventory as a color matrix -- see abundance patterns across the whole dataset at once.",
+    NAV_CORRELATIONS: "Which elements tend to occur together, statistically -- quick scan, kg-only association workbench, PCA/clustering.",
+    NAV_VITRIFICATION: "Screen tanks for glass-formulation suitability -- oxide chemistry, candidate search, blend partners.",
+    NAV_FIGURE_COMPOSER: "Combine plots captured from any workspace into one labeled, publication-ready multi-panel figure.",
+}
 
 
 class EmberMainWindow(QMainWindow):
@@ -68,6 +81,7 @@ class EmberMainWindow(QMainWindow):
         self.statusBar().showMessage("Ready.")
         self._restore_settings()
         QTimer.singleShot(0, self._auto_load_on_startup)
+        QTimer.singleShot(0, self._maybe_show_getting_started)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -108,7 +122,8 @@ class EmberMainWindow(QMainWindow):
         self.nav = QListWidget()
         self.nav.setObjectName("NavList")
         for name in NAV_ITEMS:
-            QListWidgetItem(name, self.nav)
+            item = QListWidgetItem(name, self.nav)
+            item.setToolTip(NAV_DESCRIPTIONS.get(name, ""))
         self.nav.currentRowChanged.connect(self._on_nav_changed)
         sidebar_layout.addWidget(self.nav)
         outer.addWidget(sidebar)
@@ -146,9 +161,6 @@ class EmberMainWindow(QMainWindow):
         self.figure_composer_page = FigureComposerPage(self)
         self.stack.addWidget(self.figure_composer_page)
         pump()
-        self.debug_page = DebugPage(self)
-        self.stack.addWidget(self.debug_page)
-        pump()
         outer.addWidget(self.stack, 1)
 
         # Nav row -> page by NAME: the rail order and the stack's
@@ -163,8 +175,15 @@ class EmberMainWindow(QMainWindow):
             NAV_CORRELATIONS: self.correlations_page,
             NAV_VITRIFICATION: self.vitrification_page,
             NAV_FIGURE_COMPOSER: self.figure_composer_page,
-            NAV_DEBUG: self.debug_page,
         }
+        # Debug/Export is a troubleshooting utility, not a workspace -- it
+        # lives in the Help menu (see show_debug()) instead of taking a nav
+        # rail slot, and is built lazily on first open rather than eagerly
+        # here. It still needs dataset-changed broadcasts once it exists,
+        # so it's tracked separately from (but alongside) the nav pages.
+        self.debug_page: Optional[DebugPage] = None
+        self._debug_dialog: Optional[QDialog] = None
+        self._dataset_aware_pages: list = list(self._pages_by_nav.values())
         self.nav.setCurrentRow(0)
 
     def _build_menus(self) -> None:
@@ -183,8 +202,11 @@ class EmberMainWindow(QMainWindow):
         self.dark_mode_action.toggled.connect(self._on_dark_mode_toggled)
 
         help_menu = self.menuBar().addMenu("&Help")
+        help_menu.addAction("Getting Started…", self.show_getting_started)
         help_menu.addAction("About", self.show_about)
         help_menu.addAction("Notice", self.show_notice)
+        help_menu.addSeparator()
+        help_menu.addAction("Debug / Export…", self.show_debug)
 
     # ------------------------------------------------------------------
     # Data loading
@@ -237,7 +259,7 @@ class EmberMainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Loaded {report.rows:,} rows x {report.columns} columns from {report.source_path.name}"
         )
-        for page in self._pages_by_nav.values():
+        for page in self._dataset_aware_pages:
             if hasattr(page, "on_dataset_changed"):
                 page.on_dataset_changed(self.dataset)
 
@@ -276,6 +298,23 @@ class EmberMainWindow(QMainWindow):
         if app is not None:
             apply_theme(app, dark=enabled)
 
+    def show_getting_started(self) -> None:
+        dialog = GettingStartedDialog(self)
+        dialog.workspace_chosen.connect(self._go_to_workspace)
+        dialog.exec()
+
+    def _maybe_show_getting_started(self) -> None:
+        from PySide6.QtCore import QSettings
+        settings = QSettings(APP_NAME, APP_NAME)
+        if settings.value("getting_started_shown", False, type=bool):
+            return
+        settings.setValue("getting_started_shown", True)
+        self.show_getting_started()
+
+    def _go_to_workspace(self, name: str) -> None:
+        if name in NAV_ITEMS:
+            self.nav.setCurrentRow(NAV_ITEMS.index(name))
+
     def show_about(self) -> None:
         HelpDialog(self, html=ABOUT_HTML, title=f"About {APP_NAME}").exec()
 
@@ -284,6 +323,24 @@ class EmberMainWindow(QMainWindow):
         HelpDialog(
             self, markdown=load_notice_markdown(), title=f"{APP_NAME} — Detailed Notice", width=920, height=760,
         ).exec()
+
+    def show_debug(self) -> None:
+        """Debug/Export is a troubleshooting utility, not a workspace --
+        built lazily on first open and kept around afterward (not
+        recreated) so the live log view's history survives across opens."""
+        if self._debug_dialog is None:
+            self.debug_page = DebugPage(self)
+            self._dataset_aware_pages.append(self.debug_page)
+            if self.dataset.is_loaded():
+                self.debug_page.on_dataset_changed(self.dataset)
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"{APP_NAME} — Debug / Export")
+            dialog.resize(760, 560)
+            layout = QVBoxLayout(dialog)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addWidget(self.debug_page)
+            self._debug_dialog = dialog
+        self._debug_dialog.exec()
 
     def _restore_settings(self) -> None:
         from PySide6.QtCore import QSettings

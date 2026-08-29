@@ -191,9 +191,18 @@ def tank_category_summary(
     prob = out["frac_problem_elements_proxy"].fillna(0.0) if "frac_problem_elements_proxy" in out.columns else pd.Series(0.0, index=out.index)
     vol = out["frac_volatile_halide_sulfate"].fillna(0.0) if "frac_volatile_halide_sulfate" in out.columns else pd.Series(0.0, index=out.index)
     redox = out["frac_transition_redox_sensitive"].fillna(0.0) if "frac_transition_redox_sensitive" in out.columns else pd.Series(0.0, index=out.index)
+    # Exposed as their own columns (not just summed into the final score) so
+    # the UI can show *why* a tank scored where it did -- five weighted
+    # numbers, not one opaque total. Kept in sync with raw_score below by
+    # construction: raw_score IS this sum, computed once.
+    out["contrib_glass_former"] = w["glass_former_weight"] * gf
+    out["contrib_modifier"] = w["modifier_weight"] * mod
+    out["contrib_problem"] = w["problem_weight"] * prob
+    out["contrib_volatile"] = w["volatile_weight"] * vol
+    out["contrib_redox"] = w["redox_weight"] * redox
     raw_score = (
-        w["glass_former_weight"] * gf + w["modifier_weight"] * mod
-        + w["problem_weight"] * prob + w["volatile_weight"] * vol + w["redox_weight"] * redox
+        out["contrib_glass_former"] + out["contrib_modifier"] + out["contrib_problem"]
+        + out["contrib_volatile"] + out["contrib_redox"]
     )
     out["Vitrification_screening_score_proxy"] = raw_score.clip(lower=-100, upper=100)
     out["Important_warning"] = "Screening metric only; not an official waste classification or glass formulation model"

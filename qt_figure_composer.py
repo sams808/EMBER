@@ -32,7 +32,8 @@ import compose_science as csci
 import figure_composer as fcomp
 from composer_store import store
 from data_model import HanfordDataset
-from qt_widgets import PlotWidget
+from qt_help import show_workspace_help
+from qt_widgets import CollapsibleSection, PlotWidget
 
 
 def _parse_param_text(text: str) -> Any:
@@ -65,9 +66,18 @@ class FigureComposerPage(QWidget):
         left.setObjectName("Card")
         left.setMaximumWidth(400)
         ll = QVBoxLayout(left)
+
+        header = QHBoxLayout()
         title = QLabel("Figure Composer")
         title.setObjectName("SectionTitle")
-        ll.addWidget(title)
+        header.addWidget(title)
+        header.addStretch(1)
+        help_btn = QPushButton("?")
+        help_btn.setObjectName("HelpButton")
+        help_btn.setToolTip("What is this workspace for?")
+        help_btn.clicked.connect(lambda: show_workspace_help(self, 13, "Figure Composer"))
+        header.addWidget(help_btn)
+        ll.addLayout(header)
         note = QLabel('Click "→ Figure Composer" on any plot\'s toolbar, anywhere in Ember, to add it here.')
         note.setWordWrap(True)
         note.setObjectName("SectionNote")
@@ -89,6 +99,15 @@ class FigureComposerPage(QWidget):
         remove_btn.clicked.connect(self._remove_selected)
         row_btns.addWidget(remove_btn)
         ll.addLayout(row_btns)
+        clear_btn = QPushButton("Clear all panels")
+        clear_btn.clicked.connect(self._clear_all)
+        ll.addWidget(clear_btn)
+
+        # Per-panel label editing and grid layout are refinements on top of
+        # the core add/reorder/export workflow above -- collapsed by
+        # default so a first-time user sees a short, obvious path.
+        self.advanced_section = CollapsibleSection("Advanced options (panel labels & layout)")
+        adv = self.advanced_section.content_layout()
 
         caption_row = QHBoxLayout()
         caption_row.addWidget(QLabel("Caption"))
@@ -96,9 +115,9 @@ class FigureComposerPage(QWidget):
         self.caption_edit.setEnabled(False)
         self.caption_edit.editingFinished.connect(self._apply_caption_edit)
         caption_row.addWidget(self.caption_edit)
-        ll.addLayout(caption_row)
+        adv.addLayout(caption_row)
 
-        ll.addWidget(QLabel("Selected panel"))
+        adv.addWidget(QLabel("Selected panel"))
         title_row = QHBoxLayout()
         title_row.addWidget(QLabel("Title"))
         self.title_edit = QLineEdit()
@@ -110,7 +129,7 @@ class FigureComposerPage(QWidget):
         self.hide_title_check.setEnabled(False)
         self.hide_title_check.toggled.connect(self._apply_title_edit)
         title_row.addWidget(self.hide_title_check)
-        ll.addLayout(title_row)
+        adv.addLayout(title_row)
 
         xlabel_row = QHBoxLayout()
         xlabel_row.addWidget(QLabel("X axis"))
@@ -119,7 +138,7 @@ class FigureComposerPage(QWidget):
         self.xlabel_edit.setPlaceholderText("(from plot)")
         self.xlabel_edit.editingFinished.connect(self._apply_xlabel_edit)
         xlabel_row.addWidget(self.xlabel_edit)
-        ll.addLayout(xlabel_row)
+        adv.addLayout(xlabel_row)
 
         ylabel_row = QHBoxLayout()
         ylabel_row.addWidget(QLabel("Y axis"))
@@ -128,7 +147,7 @@ class FigureComposerPage(QWidget):
         self.ylabel_edit.setPlaceholderText("(from plot)")
         self.ylabel_edit.editingFinished.connect(self._apply_ylabel_edit)
         ylabel_row.addWidget(self.ylabel_edit)
-        ll.addLayout(ylabel_row)
+        adv.addLayout(ylabel_row)
 
         params_row = QHBoxLayout()
         params_row.addWidget(QLabel("Parameters"))
@@ -137,7 +156,7 @@ class FigureComposerPage(QWidget):
         self.reset_params_btn.setEnabled(False)
         self.reset_params_btn.clicked.connect(self._reset_params)
         params_row.addWidget(self.reset_params_btn)
-        ll.addLayout(params_row)
+        adv.addLayout(params_row)
         self.params_table = QTableWidget(0, 2)
         self.params_table.setHorizontalHeaderLabels(["Parameter", "Value"])
         self.params_table.horizontalHeader().setStretchLastSection(True)
@@ -145,20 +164,16 @@ class FigureComposerPage(QWidget):
         self.params_table.setMaximumHeight(150)
         self.params_table.setEnabled(False)
         self.params_table.itemChanged.connect(self._on_param_item_changed)
-        ll.addWidget(self.params_table)
+        adv.addWidget(self.params_table)
 
-        clear_btn = QPushButton("Clear all panels")
-        clear_btn.clicked.connect(self._clear_all)
-        ll.addWidget(clear_btn)
-
-        ll.addWidget(QLabel("Layout"))
+        adv.addWidget(QLabel("Layout"))
         cols_row = QHBoxLayout()
         cols_row.addWidget(QLabel("Columns (0 = auto)"))
         self.cols_spin = QSpinBox()
         self.cols_spin.setRange(0, 8)
         self.cols_spin.valueChanged.connect(self._rebuild_preview)
         cols_row.addWidget(self.cols_spin)
-        ll.addLayout(cols_row)
+        adv.addLayout(cols_row)
 
         label_row = QHBoxLayout()
         label_row.addWidget(QLabel("Panel labels"))
@@ -166,7 +181,7 @@ class FigureComposerPage(QWidget):
         self.label_style_combo.addItems(csci.LABEL_STYLES)
         self.label_style_combo.currentTextChanged.connect(self._rebuild_preview)
         label_row.addWidget(self.label_style_combo)
-        ll.addLayout(label_row)
+        adv.addLayout(label_row)
 
         fontsize_row = QHBoxLayout()
         fontsize_row.addWidget(QLabel("Label size"))
@@ -175,7 +190,9 @@ class FigureComposerPage(QWidget):
         self.label_size_spin.setValue(14)
         self.label_size_spin.valueChanged.connect(self._rebuild_preview)
         fontsize_row.addWidget(self.label_size_spin)
-        ll.addLayout(fontsize_row)
+        adv.addLayout(fontsize_row)
+
+        ll.addWidget(self.advanced_section)
 
         ll.addWidget(QLabel("Export size (cm)"))
         size_row = QHBoxLayout()

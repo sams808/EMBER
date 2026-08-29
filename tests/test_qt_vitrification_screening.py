@@ -32,6 +32,41 @@ class TestScreeningTab:
         summary = tab._table_views["Screening summary"].dataframe()
         assert set(summary["WasteSiteId"]) == set(vitrification_dataset.available_tanks())
 
+    def test_default_plot_is_score_breakdown(self, qtbot):
+        tab = ScreeningTab(_window(qtbot))
+        qtbot.addWidget(tab)
+        assert tab.plot_type_combo.currentText() == "Score breakdown (top tanks)"
+
+    def test_switching_plot_type_redraws_without_crash(self, qtbot, vitrification_dataset):
+        tab = ScreeningTab(_window(qtbot))
+        qtbot.addWidget(tab)
+        tab.on_dataset_changed(vitrification_dataset)
+        tab.run_summary()
+        tab.plot_type_combo.setCurrentText("Screening map (kg vs Ci)")
+        qtbot.wait(20)
+        assert tab.plot.ax.get_title() == "Vitrification screening map"
+
+    def test_double_clicking_a_row_emits_the_tank_id(self, qtbot, vitrification_dataset):
+        tab = ScreeningTab(_window(qtbot))
+        qtbot.addWidget(tab)
+        tab.on_dataset_changed(vitrification_dataset)
+        tab.run_summary()
+        received = []
+        tab.jump_to_blend_partners.connect(received.append)
+        top_tank = tab._table_views["Screening summary"].dataframe().iloc[0]["WasteSiteId"]
+        index = tab._table_views["Screening summary"].model().index(0, 0)
+        tab._on_summary_row_double_clicked(index)
+        assert received == [top_tank]
+
+    def test_double_click_before_any_summary_is_a_noop(self, qtbot):
+        tab = ScreeningTab(_window(qtbot))
+        qtbot.addWidget(tab)
+        received = []
+        tab.jump_to_blend_partners.connect(received.append)
+        index = tab._table_views["Screening summary"].model().index(0, 0)
+        tab._on_summary_row_double_clicked(index)  # empty table -- must not raise or emit
+        assert received == []
+
     def test_default_weight_spins_match_science_defaults(self, qtbot):
         tab = ScreeningTab(_window(qtbot))
         qtbot.addWidget(tab)

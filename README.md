@@ -30,7 +30,15 @@ citation) and the exact data provenance.
 | **Correlations** | Quick Scan (target/dual/triple/full-matrix correlation, partial-correlation tank-size control), Association Workbench (kg-only Jaccard co-presence + preferred-association scoring, 18 plot types incl. publication-style tank inventory bar charts), Structure (PCA/clustering, partial correlation, network graph, interactive Plotly export). |
 | **Vitrification** | Screening (adjustable-weight glass-formulation heuristic), Oxide Chemistry (element→oxide stoichiometric conversion, optical basicity, NBO/T, composition envelope checking, optional GlassNet ML property prediction), Candidate Search, Blend Partners. |
 | **Figure Composer** | Combine any plots captured from any workspace into one multi-panel publication figure, with automatic panel labels (A, B, C, ...) and exact-size/DPI export. |
-| **Debug / Export** | Global debug bundle export, environment info. |
+
+Every workspace's rarely-needed controls (thresholds, score weights,
+per-plot-type tuning) are tucked behind an "Advanced options" toggle so the
+default view stays short; a `?` button on each workspace opens that
+workspace's own section of `NOTICE.md`. **Help → Getting Started…**
+re-opens the first-launch "what are you trying to do?" picker at any time,
+and **Help → Debug / Export…** holds the live log viewer and one-click
+debug-bundle export (a troubleshooting utility, not a workspace, so it
+isn't in the nav rail).
 
 ## Installation
 
@@ -91,3 +99,11 @@ waste databases:
 
 See [`NOTICE.md`](NOTICE.md) for the full citation context and independence
 disclaimer.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE). If you use Ember in published work, a
+citation of the repository is appreciated, alongside the PHOENIX data
+citation above.
+
+Sam Soudani — McCloy group, Washington State University.
