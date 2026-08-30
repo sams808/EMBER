@@ -7,7 +7,10 @@ real background thread or wait-loop is needed here.
 import pytest
 
 import data_model as dm
-from qt_shell import NAV_DESCRIPTIONS, NAV_EXPLORER, NAV_ITEMS, EmberMainWindow
+from qt_shell import (
+    NAV_DESCRIPTIONS, NAV_EXPLORER, NAV_ITEMS, NAV_OVERVIEW, NAV_QUERY,
+    EmberMainWindow,
+)
 
 
 @pytest.fixture
@@ -103,6 +106,81 @@ class TestDatasetLoadBroadcast:
     def test_reload_without_prior_load_shows_info_message(self, window):
         assert window.dataset.path is None
         window._reload()  # must not raise; QMessageBox.information is neutralized by conftest
+
+
+class TestGlobalScopeWiring:
+    def _write_csv(self, tmp_path):
+        path = tmp_path / "scoped.csv"
+        path.write_text(
+            "WasteSiteId,Analyte,WastePhase,WasteType,Inventory,Units\n"
+            "241-A-101,Fe,Liquid,T1,50.0,kg\n"
+            "241-A-101,Fe,Solid,T1,10.0,kg\n"
+        )
+        return path
+
+    def test_scope_bar_only_visible_on_scoped_workspaces(self, window, qtbot):
+        window.show()
+        qtbot.waitExposed(window)
+        try:
+            window.nav.setCurrentRow(NAV_ITEMS.index(NAV_QUERY))
+            assert window.scope_bar.isVisible()
+            window.nav.setCurrentRow(NAV_ITEMS.index(NAV_OVERVIEW))
+            assert not window.scope_bar.isVisible()
+        finally:
+            window.hide()
+
+    def test_scope_bar_visibility_is_derived_from_the_page_protocol(self, window):
+        # Not a hand-maintained list: a page that honors scope changes gets
+        # the bar automatically, and one that doesn't can never have data
+        # filtered by a control it never shows.
+        scoped = window._scoped_nav_items()
+        assert scoped == {
+            name for name, page in window._pages_by_nav.items()
+            if hasattr(page, "on_scope_changed")
+        }
+        assert NAV_QUERY in scoped
+        assert scoped <= set(NAV_ITEMS)
+
+    def test_ask_in_query_navigates_and_answers(self, window, tmp_path, qtbot):
+        window._start_load(lambda: window.dataset.load(self._write_csv(tmp_path), use_cache=False))
+        qtbot.wait(50)
+        assert window.ask_in_query("element", "Fe", "kg") is True
+        qtbot.wait(20)
+        assert window.stack.currentWidget() is window.query_page
+        assert window.query_page.result_view.dataframe()["Total_kg"].sum() == pytest.approx(60.0)
+
+    def test_explorer_cross_link_uses_the_public_api(self, window, tmp_path, qtbot):
+        window._start_load(lambda: window.dataset.load(self._write_csv(tmp_path), use_cache=False))
+        qtbot.wait(50)
+        window.explorer_page.query_edit.setText("Fe")
+        window.explorer_page._ask_in_query()
+        qtbot.wait(20)
+        assert window.stack.currentWidget() is window.query_page
+        assert window.query_page.subject_edit.text() == "Fe"
+
+    def test_query_page_shares_the_shell_scope_object(self, window):
+        assert window.query_page.scope is window.global_scope
+
+    def test_load_reconciles_scope_bar_before_page_dispatch(self, window, tmp_path, qtbot):
+        window._start_load(lambda: window.dataset.load(self._write_csv(tmp_path), use_cache=False))
+        qtbot.wait(50)
+        farm_combo = window.scope_bar._combos["TankFarm"]
+        assert [farm_combo.itemText(i) for i in range(farm_combo.count())] == ["All", "A"]
+
+    def test_scope_change_fans_out_to_pages(self, window, tmp_path, qtbot):
+        window._start_load(lambda: window.dataset.load(self._write_csv(tmp_path), use_cache=False))
+        qtbot.wait(50)
+        page = window.query_page
+        page.kind_combo.setCurrentText("Element")
+        page.subject_edit.setText("Fe")
+        page.basis_combo.setCurrentText("kg")
+        page.run()
+        qtbot.wait(20)
+        assert page.result_view.dataframe()["Total_kg"].sum() == pytest.approx(60.0)
+        window.global_scope.set_filter("WastePhase", ["Solid"])
+        qtbot.wait(20)
+        assert page.result_view.dataframe()["Total_kg"].sum() == pytest.approx(10.0)
+        assert "Scope: Solid" in page.plot.ax.get_title()
 
 
 class TestBrowseAndLoadRemembersLastDirectory:

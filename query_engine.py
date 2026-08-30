@@ -61,11 +61,13 @@ DIMENSIONS: Dict[str, str] = {
     "WastePhase": "Waste phase",
     "WasteType": "Waste type",
     "TankSystem": "SST/DST",
+    "TankType": "Tank type",
     "TankIntegrity": "Tank integrity",
     "TankStatus": "Tank status",
     "Ventilation": "Ventilation",
     "Element": "Element",
     "Isotope": "Isotope",
+    "Analyte": "Analyte (species)",
     "AnalyteClass": "Analyte class",
     "Units": "Units",
     "DecayDate": "Decay baseline",
@@ -73,13 +75,32 @@ DIMENSIONS: Dict[str, str] = {
 
 # Dimensions along which layer mass/volume denominators are well-defined
 # (constant per layer or per tank). Grouping a concentration basis by
-# Element/Isotope/etc. would double-count denominators and is refused.
+# Element/Isotope/Analyte/etc. would double-count denominators and is
+# refused. TankType is per-tank, hence layer-compatible.
 LAYER_COMPATIBLE_DIMS = {
     "WasteSiteId", "TankFarm", "WastePhase", "WasteType",
-    "TankSystem", "TankIntegrity", "TankStatus", "Ventilation",
+    "TankSystem", "TankType", "TankIntegrity", "TankStatus", "Ventilation",
 }
 
-BASES = ["g", "kg", "Ci", "wt%", "g/L"]
+# The value column each basis produces, and the unit-honest axis label for
+# that column. ONE registry: run_query names its output column from here
+# and the plot grammar labels axes from here, so a new basis cannot ship
+# with an unlabeled (or, worse, mislabeled) axis.
+VALUE_COLUMN_BY_BASIS: Dict[str, str] = {
+    "g": "Total_g",
+    "kg": "Total_kg",
+    "Ci": "Total_Ci",
+    "wt%": "wt_pct",
+    "g/L": "g_per_L",
+}
+VALUE_AXIS_LABELS: Dict[str, str] = {
+    "Total_g": "Total mass (g)",
+    "Total_kg": "Total mass (kg)",
+    "Total_Ci": "Total activity (Ci)",
+    "wt_pct": "wt% of layer mass",
+    "g_per_L": "g per liter",
+}
+BASES = list(VALUE_COLUMN_BY_BASIS)
 _LAYER_KEYS = ["WasteSiteId", "WastePhase", "WasteType"]
 
 

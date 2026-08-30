@@ -25,13 +25,28 @@ def safe_name(text: object, max_len: int = 90) -> str:
 
 def export_named_tables(
     dataset: HanfordDataset, folder_prefix: str, tables: Dict[str, Optional[pd.DataFrame]],
+    context: Optional[Dict[str, str]] = None,
 ) -> Path:
     """Write each non-None DataFrame in `tables` as `<name>.csv` inside a
     fresh timestamped folder under dataset.output_root, plus a
-    manifest.csv. Returns the folder path."""
+    manifest.csv. Returns the folder path.
+
+    `context` is written as its own `context.csv` (key,value) — the Stage-2
+    slot for "what state produced this export": active global scope,
+    query/plot spec JSON, decay-date settings, ... A figure filtered to
+    one farm must carry that fact in its own export folder. It gets a
+    real file rather than sentinel rows inside manifest.csv so the
+    manifest stays exactly what every reader already assumes it is: one
+    row per written file."""
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = dataset.output_root / f"{safe_name(folder_prefix)}_{stamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if context:
+        tables = dict(tables)
+        tables["context"] = pd.DataFrame(
+            [{"key": key, "value": str(value)} for key, value in context.items()]
+        )
 
     manifest_rows = []
     for name, df in tables.items():

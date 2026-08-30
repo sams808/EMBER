@@ -28,6 +28,7 @@ from qt_heatmap import HeatmapPage
 from qt_help import ABOUT_HTML, APP_NAME, APP_VERSION, GettingStartedDialog, HelpDialog, asset_path
 from qt_overview import OverviewPage
 from qt_query import QueryPage
+from qt_scope import GlobalScope, GlobalScopeBar
 from qt_tank_attributes import TankAttributesPage
 from qt_tank_explorer import TankExplorerPage
 from qt_vitrification import VitrificationPage
@@ -76,6 +77,8 @@ class EmberMainWindow(QMainWindow):
 
         self.status_logger = StatusLogger()
         self.dataset = HanfordDataset(logger=self.status_logger.log)
+        self.global_scope = GlobalScope(self)
+        self.global_scope.changed.connect(self._on_scope_changed)
 
         self._build_toolbar()
         self._build_body()
@@ -138,12 +141,18 @@ class EmberMainWindow(QMainWindow):
         # whatever window is currently visible (the splash screen, during
         # qt_main's startup sequence). Pumping events between each page
         # keeps that queue draining without changing what gets built.
+        # The scope bar and its state must exist BEFORE the page loop below:
+        # pages read app_window.global_scope in their constructors, and the
+        # pump() calls deliver queued events that must never hit half-built
+        # scope wiring.
+        self.scope_bar = GlobalScopeBar(self.global_scope)
+
         pump = QApplication.processEvents
         self.stack = QStackedWidget()
         self.overview_page = OverviewPage(self)
         self.stack.addWidget(self.overview_page)
         pump()
-        self.query_page = QueryPage(self)
+        self.query_page = QueryPage(self, scope=self.global_scope)
         self.stack.addWidget(self.query_page)
         pump()
         self.explorer_page = ExplorerPage(self)
@@ -167,7 +176,13 @@ class EmberMainWindow(QMainWindow):
         self.figure_composer_page = FigureComposerPage(self)
         self.stack.addWidget(self.figure_composer_page)
         pump()
-        outer.addWidget(self.stack, 1)
+
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(0)
+        right.addWidget(self.scope_bar)
+        right.addWidget(self.stack, 1)
+        outer.addLayout(right, 1)
 
         # Nav row -> page by NAME: the rail order and the stack's
         # construction order happen to match today, but must never be
@@ -199,6 +214,19 @@ class EmberMainWindow(QMainWindow):
         if self.debug_page is not None:
             pages.append(self.debug_page)
         return pages
+
+    def _scoped_nav_items(self) -> set:
+        """Workspaces that honor the global scope bar -- DERIVED from the
+        same protocol the shell dispatches on (on_scope_changed), never a
+        second hand-maintained list. The bar is shown only above these: a
+        "global" filter hovering over a workspace that ignores it would be
+        a lie about what's on screen, and a workspace that honors it
+        without showing it filters data by an invisible control. Legacy
+        workspaces join automatically as they migrate onto the engine."""
+        return {
+            name for name, page in self._pages_by_nav.items()
+            if hasattr(page, "on_scope_changed")
+        }
 
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -273,9 +301,21 @@ class EmberMainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Loaded {report.rows:,} rows x {report.columns} columns from {report.source_path.name}"
         )
+        # Reconcile the scope bar FIRST -- pages refreshed below must see
+        # the already-reconciled scope, not a stale filter pointing at
+        # values the new dataset doesn't have. The coalesce block spans
+        # the dispatch so any scope change from that reconciliation is
+        # announced exactly once, AFTER every page has the new dataset.
+        with self.global_scope.coalesce():
+            self.scope_bar.on_dataset_changed(self.dataset)
+            for page in self._dataset_aware_pages():
+                if hasattr(page, "on_dataset_changed"):
+                    page.on_dataset_changed(self.dataset)
+
+    def _on_scope_changed(self) -> None:
         for page in self._dataset_aware_pages():
-            if hasattr(page, "on_dataset_changed"):
-                page.on_dataset_changed(self.dataset)
+            if hasattr(page, "on_scope_changed"):
+                page.on_scope_changed()
 
     def _on_load_error(self, tb_text: str) -> None:
         self._set_busy(False)
@@ -302,6 +342,8 @@ class EmberMainWindow(QMainWindow):
             return
         page = self._pages_by_nav[NAV_ITEMS[row]]
         self.stack.setCurrentWidget(page)
+        # The scope bar appears only above workspaces that honor it.
+        self.scope_bar.setVisible(NAV_ITEMS[row] in self._scoped_nav_items())
 
     def _on_dark_mode_toggled(self, enabled: bool) -> None:
         # Restyles the Qt chrome only -- matplotlib plot areas stay white
@@ -328,6 +370,23 @@ class EmberMainWindow(QMainWindow):
     def _go_to_workspace(self, name: str) -> None:
         if name in NAV_ITEMS:
             self.nav.setCurrentRow(NAV_ITEMS.index(name))
+
+    def ask_in_query(self, kind: str, subject: str, basis: Optional[str] = None) -> bool:
+        """Public cross-link: show the Query workspace and answer `subject`
+        there. Returns False (having done nothing) if the workspace can't
+        be shown -- a caller must never leave the user on one page while a
+        hidden one reports a completed query. Workspaces call THIS rather
+        than reaching into query_page through a private nav method."""
+        if not self._go_to_nav(NAV_QUERY):
+            return False
+        self.query_page.prefill_and_run(kind, subject, basis)
+        return True
+
+    def _go_to_nav(self, name: str) -> bool:
+        if name not in NAV_ITEMS:
+            return False
+        self.nav.setCurrentRow(NAV_ITEMS.index(name))
+        return self.stack.currentWidget() is self._pages_by_nav[name]
 
     def show_about(self) -> None:
         HelpDialog(self, html=ABOUT_HTML, title=f"About {APP_NAME}").exec()

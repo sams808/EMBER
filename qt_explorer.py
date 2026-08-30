@@ -89,6 +89,14 @@ class ExplorerPage(QWidget):
         run_btn.setObjectName("Primary")
         run_btn.clicked.connect(self.run_search)
         primary.addWidget(run_btn)
+        ask_query_btn = QPushButton("Ask in Query →")
+        ask_query_btn.setToolTip(
+            "Answer this subject with the query engine instead: stoichiometrically\n"
+            "apportioned element masses, Ci→g bridging, wt%/g-per-L bases, and\n"
+            "per-source disclosures. (This workspace sums reported rows as-is.)"
+        )
+        ask_query_btn.clicked.connect(self._ask_in_query)
+        primary.addWidget(ask_query_btn)
         primary.addStretch(1)
         root.addLayout(primary)
 
@@ -151,6 +159,24 @@ class ExplorerPage(QWidget):
         splitter.setStretchFactor(1, 1)
 
     # ------------------------------------------------------------------
+    def _ask_in_query(self) -> None:
+        """Cross-link to the Query workspace: same subject, engine
+        semantics (apportioned masses, Ci→g bridge, disclosures)."""
+        query = self.query_edit.text().strip()
+        if not query:
+            QMessageBox.information(self, "Element Explorer", "Enter a query first.")
+            return
+        symbol = None
+        if self.mode_combo.currentText() in ("auto", "element"):
+            from elements import normalize_element_symbol
+            symbol = normalize_element_symbol(query)
+        kind, subject = ("element", symbol) if symbol else ("analyte", query)
+        ask = getattr(self.app_window, "ask_in_query", None)
+        if ask is None:  # standalone construction in tests/tooling
+            return
+        if not ask(kind, subject):
+            QMessageBox.information(self, "Element Explorer", "The Query workspace isn't available.")
+
     def on_dataset_changed(self, dataset: HanfordDataset) -> None:
         self.dataset = dataset
         current_unit = self.unit_combo.currentText()

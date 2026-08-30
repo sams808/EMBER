@@ -107,6 +107,21 @@ def build_stylesheet(palette: dict = PALETTE) -> str:
         border-radius: 4px;
         padding: 5px 10px;
     }}
+    QWidget#ScopeBar {{
+        background: {p['bg_alt']};
+        border-bottom: 1px solid {p['border']};
+    }}
+    QLabel#ScopeTitle {{
+        font-size: 12px;
+        font-weight: 600;
+        color: {p['muted']};
+        text-transform: uppercase;
+    }}
+    QLabel#ScopeStamp {{
+        font-size: 12px;
+        font-weight: 600;
+        color: {p['accent']};
+    }}
     QToolButton#CollapsibleHeader {{
         background: transparent;
         border: none;

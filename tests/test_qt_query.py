@@ -1,9 +1,10 @@
 """
-Query workspace (qt_query.QueryPage) tests: UI wiring over the L1 engine.
-Engine *numbers* are covered in test_query_engine.py; here the assertions
-are about what the page does with a result -- tables, warnings label,
-plot, export, scope combos -- using the same hand-built chem dataset so
-any value that IS checked is still hand-derivable.
+Query workspace (qt_query.QueryPage) tests: UI wiring over the L1 engine
+and the L2 grammar. Engine *numbers* are covered in test_query_engine.py;
+here the assertions are about what the page does with a result -- tables,
+warnings label, grammar plots, templates, global scope, export -- using
+the same hand-built chem dataset so any value that IS checked is still
+hand-derivable.
 """
 import polars as pl
 import pytest
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import QMainWindow
 import data_model as dm
 import reference_data as rd
 from qt_query import QueryPage
+from query_templates import TEMPLATES
 
 
 def _make_page(qtbot):
@@ -82,31 +84,42 @@ class TestSubjectKindToggle:
         assert page._result is None
 
 
-class TestScopeCombos:
-    def test_on_dataset_changed_populates_farm_and_phase(self, qtbot, sample_dataset):
-        page = _make_page(qtbot)
-        page.on_dataset_changed(sample_dataset)
-        farms = [page.farm_combo.itemText(i) for i in range(page.farm_combo.count())]
-        phases = [page.phase_combo.itemText(i) for i in range(page.phase_combo.count())]
-        assert farms == ["All", "A", "AN"]
-        assert phases[0] == "All" and "Sludge" in phases
-
-    def test_current_selection_survives_a_dataset_reload(self, qtbot, sample_dataset):
-        page = _make_page(qtbot)
-        page.on_dataset_changed(sample_dataset)
-        page.farm_combo.setCurrentText("AN")
-        page.on_dataset_changed(sample_dataset)
-        assert page.farm_combo.currentText() == "AN"
-
+class TestGlobalScope:
     def test_scope_filters_reach_the_engine(self, qtbot, sample_dataset):
         # Fe is 50 kg Solid + 10 kg Liquid on 241-A-101; scoping to Solid
         # must leave exactly the 50.
         page = _make_page(qtbot)
         page.on_dataset_changed(sample_dataset)
-        page.phase_combo.setCurrentText("Solid")
+        page.scope.set_filter("WastePhase", ["Solid"])
         _run_element(page, "Fe")
         qtbot.wait(20)
         assert page.result_view.dataframe()["Total_kg"].sum() == pytest.approx(50.0)
+
+    def test_scope_is_stamped_on_the_plot_subtitle(self, qtbot, sample_dataset):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(sample_dataset)
+        page.scope.set_filter("WastePhase", ["Solid"])
+        _run_element(page, "Fe")
+        qtbot.wait(20)
+        assert "Scope: Solid" in page.plot.ax.get_title()
+
+    def test_scope_change_reruns_a_standing_result(self, qtbot, sample_dataset):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(sample_dataset)
+        _run_element(page, "Fe")
+        qtbot.wait(20)
+        assert page.result_view.dataframe()["Total_kg"].sum() == pytest.approx(60.0)
+        page.scope.set_filter("WastePhase", ["Solid"])
+        page.on_scope_changed()  # the shell fans this out on scope.changed
+        qtbot.wait(20)
+        assert page.result_view.dataframe()["Total_kg"].sum() == pytest.approx(50.0)
+
+    def test_scope_change_without_a_result_does_not_run(self, qtbot, sample_dataset):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(sample_dataset)
+        page.scope.set_filter("WastePhase", ["Solid"])
+        page.on_scope_changed()
+        assert page._result is None
 
 
 class TestRunFillsTheWorkspace:
@@ -142,6 +155,98 @@ class TestRunFillsTheWorkspace:
         qtbot.wait(20)
         expected = 100.0 * rd.SPECIES_ELEMENT_MASS_FRACTIONS["SO4"]["S"] + 5.0
         assert page.result_view.dataframe()["Total_kg"].iloc[0] == pytest.approx(expected)
+
+
+class TestTemplates:
+    def test_picker_lists_every_template_after_the_placeholder(self, qtbot):
+        page = _make_page(qtbot)
+        labels = [page.template_combo.itemText(i) for i in range(page.template_combo.count())]
+        assert labels[0] == "Guided questions…"
+        assert labels[1:] == [t.question for t in TEMPLATES]
+
+    def test_applying_a_template_sets_controls_and_runs(self, qtbot):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(_chem_dataset())
+        template = next(t for t in TEMPLATES if t.key == "salt_formers_wtpct")
+        page.apply_template(template)
+        qtbot.wait(20)
+        assert page.kind_combo.currentText() == "Basket"
+        assert page.basket_combo.currentText() == "Salt formers"
+        assert page.basis_combo.currentText() == "wt%"
+        assert page.group1_combo.currentText() == "Tank"
+        assert page.group2_combo.currentText() == "Waste phase"
+        assert page._result is not None
+
+    def test_placeholder_activation_is_a_no_op(self, qtbot):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(_chem_dataset())
+        page._on_template_activated(0)
+        assert page._result is None
+
+
+class TestGrammarPlots:
+    def _salt_formers_two_dims(self, qtbot):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(_chem_dataset())
+        page.kind_combo.setCurrentText("Basket")
+        page.basket_combo.setCurrentText("Salt formers")
+        page.basis_combo.setCurrentText("kg")
+        page.group1_combo.setCurrentText("Tank")
+        page.group2_combo.setCurrentText("Waste phase")
+        page.run()
+        return page
+
+    def test_ungrouped_run_plots_the_per_member_split(self, qtbot):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(_chem_dataset())
+        page.kind_combo.setCurrentText("Basket")
+        page.basket_combo.setCurrentText("Salt formers")
+        page.basis_combo.setCurrentText("kg")
+        page.group1_combo.setCurrentText("—")
+        page.group2_combo.setCurrentText("—")
+        page.run()
+        qtbot.wait(20)
+        labels = [t.get_text() for t in page.plot.ax.get_yticklabels()]
+        assert "Cl" in labels and "Cr" in labels
+
+    def test_two_dims_bar_uses_hue_legend_not_joined_labels(self, qtbot):
+        page = self._salt_formers_two_dims(qtbot)
+        qtbot.wait(20)
+        legend = page.plot.ax.get_legend()
+        assert legend is not None
+        assert legend.get_title().get_text() == "WastePhase"
+        labels = [t.get_text() for t in page.plot.ax.get_yticklabels()]
+        assert all("·" not in label for label in labels)
+
+    def test_heatmap_mark_draws_a_matrix(self, qtbot):
+        page = self._salt_formers_two_dims(qtbot)
+        page.mark_combo.setCurrentText("Heatmap")
+        qtbot.wait(20)
+        assert len(page.plot.ax.get_images()) == 1
+
+    def test_one_dim_stacked_bar_splits_by_member(self, qtbot):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(_chem_dataset())
+        page.kind_combo.setCurrentText("Basket")
+        page.basket_combo.setCurrentText("Salt formers")
+        page.basis_combo.setCurrentText("kg")
+        page.group1_combo.setCurrentText("Waste phase")
+        page.group2_combo.setCurrentText("—")
+        page.run()
+        page.mark_combo.setCurrentText("Stacked bar")
+        qtbot.wait(20)
+        legend = page.plot.ax.get_legend()
+        assert legend is not None
+        assert legend.get_title().get_text() == "Member"
+
+    def test_box_without_two_dims_explains_instead_of_drawing(self, qtbot):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(_chem_dataset())
+        _run_element(page, "Fe")
+        page.mark_combo.setCurrentText("Box (distribution)")
+        qtbot.wait(20)
+        texts = [t.get_text() for t in page.plot.ax.texts]
+        assert any("two grouping dimensions" in t for t in texts)
 
 
 class TestWarningsLabel:
@@ -184,36 +289,8 @@ class TestWarningsLabel:
         assert page._result is previous
 
 
-class TestPlot:
-    def test_ungrouped_run_plots_the_per_member_split(self, qtbot):
-        page = _make_page(qtbot)
-        page.on_dataset_changed(_chem_dataset())
-        page.kind_combo.setCurrentText("Basket")
-        page.basket_combo.setCurrentText("Salt formers")
-        page.basis_combo.setCurrentText("kg")
-        page.group1_combo.setCurrentText("—")
-        page.group2_combo.setCurrentText("—")
-        page.run()
-        qtbot.wait(20)
-        labels = [t.get_text() for t in page.plot.ax.get_yticklabels()]
-        assert "Cl" in labels and "Cr" in labels
-
-    def test_two_dim_grouping_plots_joined_labels(self, qtbot):
-        page = _make_page(qtbot)
-        page.on_dataset_changed(_chem_dataset())
-        _run_element(page, "S", group1="Waste phase")
-        page.group2_combo.setCurrentText("Waste type")
-        page.run()
-        qtbot.wait(20)
-        labels = [t.get_text() for t in page.plot.ax.get_yticklabels()]
-        assert any("·" in label for label in labels)
-
-
 class TestDatasetReload:
     def test_dataset_change_clears_stale_result_everywhere(self, qtbot, sample_dataset):
-        # Review finding: on_dataset_changed repopulated the scope combos
-        # but left dataset A's result/tables/banner/plot standing -- and
-        # Export would write A's numbers into B's output folder.
         page = _make_page(qtbot)
         page.on_dataset_changed(_chem_dataset())
         _run_element(page, "S")
@@ -228,11 +305,12 @@ class TestDatasetReload:
 
 
 class TestExport:
-    def test_export_writes_tables_and_plot(self, qtbot, tmp_path):
+    def test_export_writes_tables_plot_and_scope_context(self, qtbot, tmp_path):
         page = _make_page(qtbot)
         dataset = _chem_dataset()
         dataset.output_root = tmp_path
         page.on_dataset_changed(dataset)
+        page.scope.set_filter("WastePhase", ["Supernatant"])
         _run_element(page, "S")
         qtbot.wait(20)
         page._export()
@@ -242,3 +320,6 @@ class TestExport:
         assert (out_dirs[0] / "query_per_member.csv").exists()
         assert (out_dirs[0] / "query_notes.csv").exists()
         assert (out_dirs[0] / "query_plot.png").exists()
+        context = (out_dirs[0] / "context.csv").read_text(encoding="utf-8")
+        assert "global_scope" in context and "Supernatant" in context
+        assert "plot_spec" in context

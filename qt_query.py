@@ -1,19 +1,25 @@
 """
 qt_query.py — the Query workspace: the first UI over the L1 query engine
-(query_engine.py). Ask one flexible question -- any element, analyte, or
+(query_engine.py) and, since Stage 2, the first grammar-driven perspective
+(plot_grammar.py). Ask one flexible question -- any element, analyte, or
 basket x any basis (kg / Ci / bridged grams / wt% / g/L) x any grouping
-dimension -- instead of hunting for a workspace whose fixed plot list
-happens to include it.
+dimension -- and choose how to see it (bars, stacked bars, heatmap, box).
 
-House pattern: primary row with the essentials, Advanced options collapsed
-(scope filters), "?" help scoped to this workspace's NOTICE.md section.
-Engine warnings render prominently (accent-colored) because they are data-
-integrity statements, not chrome; per-member disclosures land in the Notes
-tab AND in every export.
+Stage-2 changes:
+- Guided questions: one-click templates (query_templates.py) that fill the
+  controls AND run, so a first-time user gets a correct, disclosed answer
+  before learning any knobs.
+- Scope comes from the app-wide global scope bar (qt_scope.py), not local
+  combos -- one filter mechanism, stamped into the plot subtitle and the
+  export manifest. A scope change re-runs the current question.
+- Plotting goes through the L2 grammar: a second grouping dimension
+  becomes hue (grouped/stacked bars) or the heatmap column axis, instead
+  of joined text labels.
 """
 from __future__ import annotations
 
-from typing import Dict, Optional
+import json
+from typing import List, Optional
 
 import pandas as pd
 from PySide6.QtWidgets import (
@@ -22,22 +28,39 @@ from PySide6.QtWidgets import (
 )
 
 import export_utils
-import plot_helpers as ph
 from data_model import HanfordDataset
+from plot_grammar import MARK_BY_LABEL, MARK_LABELS, PlotSpec, render_plot
 from qt_help import make_help_button
-from qt_widgets import CollapsibleSection, DataFrameTableView, PlotWidget
+from qt_scope import GlobalScope
+from qt_widgets import DataFrameTableView, PlotWidget
 from query_engine import BASES, BASKET_PRESETS, DIMENSIONS, run_query
+from query_plots import plan_plot
+from query_templates import TEMPLATES
 
 _SUBJECT_KINDS = ["Basket", "Element", "Analyte"]
 _NO_DIM = "—"
+_TEMPLATE_PLACEHOLDER = "Guided questions…"
+# Marks this workspace offers, and the reverse lookups -- all derived from
+# the grammar's own registry so a mark can never exist there but be
+# untranslatable (or silently mislabeled) here. Scatter needs two value
+# columns, which a single-measure query result doesn't have.
+_MARKS_OFFERED = [m for m in MARK_LABELS if m != "scatter"]
+_PLOT_MARKS = [MARK_LABELS[m] for m in _MARKS_OFFERED]
+_COL_BY_DIM_LABEL = {label: col for col, label in DIMENSIONS.items()}
 
 
 class QueryPage(QWidget):
-    def __init__(self, app_window, parent: Optional[QWidget] = None):
+    def __init__(self, app_window, scope: Optional[GlobalScope] = None,
+                 parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.app_window = app_window
+        # The shell passes the shared global scope; standalone construction
+        # (tests, tooling) gets a private, initially-empty one.
+        self.scope = scope if scope is not None else GlobalScope(self)
         self.dataset: Optional[HanfordDataset] = None
         self._result = None
+        self._subject_label = ""
+        self._last_spec: Optional[PlotSpec] = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -59,6 +82,20 @@ class QueryPage(QWidget):
         root.addLayout(header)
 
         primary = QHBoxLayout()
+        # Guided questions FIRST: the easiest entry point sits where a new
+        # user reads first. Templates fill the controls and run, so the
+        # knobs that produced the answer stay visible, not hidden.
+        self.template_combo = QComboBox()
+        self.template_combo.addItem(_TEMPLATE_PLACEHOLDER)
+        for template in TEMPLATES:
+            self.template_combo.addItem(template.question)
+        for i, template in enumerate(TEMPLATES, start=1):
+            self.template_combo.setItemData(i, template.explanation, 3)  # Qt.ToolTipRole
+        self.template_combo.setToolTip("One-click starter questions — picking one fills the controls below and runs.")
+        self.template_combo.activated.connect(self._on_template_activated)
+        primary.addWidget(self.template_combo)
+
+        primary.addSpacing(10)
         primary.addWidget(QLabel("Subject"))
         self.kind_combo = QComboBox()
         self.kind_combo.addItems(_SUBJECT_KINDS)
@@ -95,31 +132,23 @@ class QueryPage(QWidget):
         primary.addWidget(self.group1_combo)
         primary.addWidget(self.group2_combo)
 
+        primary.addWidget(QLabel("Plot"))
+        self.mark_combo = QComboBox()
+        self.mark_combo.addItems(_PLOT_MARKS)
+        self.mark_combo.setToolTip(
+            "How the result is drawn. With two grouping dimensions, the second one\n"
+            "becomes the bar series (grouped/stacked) or the heatmap columns;\n"
+            "Box shows the distribution of dimension-1 values within each dimension-2 level."
+        )
+        self.mark_combo.currentTextChanged.connect(lambda _t: self._update_plot())
+        primary.addWidget(self.mark_combo)
+
         run_btn = QPushButton("Run query")
         run_btn.setObjectName("Primary")
         run_btn.clicked.connect(self.run)
         primary.addWidget(run_btn)
         primary.addStretch(1)
         root.addLayout(primary)
-
-        self.advanced_section = CollapsibleSection("Advanced options (scope filters)")
-        adv = self.advanced_section.content_layout()
-        adv_row = QHBoxLayout()
-        adv_row.addWidget(QLabel("Farm"))
-        self.farm_combo = QComboBox()
-        self.farm_combo.addItem("All")
-        adv_row.addWidget(self.farm_combo)
-        adv_row.addWidget(QLabel("Waste phase"))
-        self.phase_combo = QComboBox()
-        self.phase_combo.addItem("All")
-        adv_row.addWidget(self.phase_combo)
-        adv_row.addWidget(QLabel("SST/DST"))
-        self.system_combo = QComboBox()
-        self.system_combo.addItems(["All", "SST", "DST"])
-        adv_row.addWidget(self.system_combo)
-        adv_row.addStretch(1)
-        adv.addLayout(adv_row)
-        root.addWidget(self.advanced_section)
 
         # Engine warnings are data-integrity statements (mixed decay
         # cohorts, exclusions, unassigned uncertainty) -- always visible,
@@ -152,52 +181,63 @@ class QueryPage(QWidget):
         self.basket_combo.setVisible(kind == "Basket")
         self.subject_edit.setVisible(kind != "Basket")
 
+    def _on_template_activated(self, index: int) -> None:
+        if index <= 0:
+            return
+        template = TEMPLATES[index - 1]
+        self.apply_template(template)
+
+    def apply_template(self, template) -> None:
+        """Fill every control from a guided template, then run."""
+        self.kind_combo.setCurrentText(template.subject_kind.capitalize())
+        if template.subject_kind == "basket":
+            self.basket_combo.setCurrentText(template.subject)
+        else:
+            self.subject_edit.setText(template.subject)
+        self.basis_combo.setCurrentText(template.basis)
+        dims = list(template.group_by)
+        self.group1_combo.setCurrentText(DIMENSIONS[dims[0]] if dims else _NO_DIM)
+        self.group2_combo.setCurrentText(DIMENSIONS[dims[1]] if len(dims) > 1 else _NO_DIM)
+        self.mark_combo.setCurrentText(MARK_LABELS[template.mark])
+        self.run()
+
+    def prefill_and_run(self, kind: str, subject: str, basis: Optional[str] = None) -> None:
+        """Cross-link entry point (e.g. Element Explorer's "Ask in Query"):
+        set the subject, keep the current grouping, and answer."""
+        self.kind_combo.setCurrentText(kind.capitalize())
+        if kind.lower() == "basket":
+            self.basket_combo.setCurrentText(subject)
+        else:
+            self.subject_edit.setText(subject)
+        if basis is not None:
+            self.basis_combo.setCurrentText(basis)
+        self.run()
+
     def on_dataset_changed(self, dataset: HanfordDataset) -> None:
         self.dataset = dataset
-        # Review finding: a result computed on the PREVIOUS dataset stayed
-        # on screen (and would export into the new dataset's output folder)
-        # -- clear everything result-shaped before repopulating the combos.
+        # A result computed on the PREVIOUS dataset must not stay on screen
+        # (and must never export into the new dataset's output folder).
         self._result = None
         self._subject_label = ""
+        self._last_spec = None
         for view in (self.result_view, self.member_view, self.notes_view):
             view.set_dataframe(pd.DataFrame())
         self.warnings_label.setVisible(False)
         self.plot.show_message("Run a query to see results here.")
-        if not dataset.is_loaded():
-            return
-        df = dataset.require_df()
-        for combo, column in ((self.farm_combo, "TankFarm"), (self.phase_combo, "WastePhase")):
-            current = combo.currentText()
-            combo.blockSignals(True)
-            combo.clear()
-            combo.addItem("All")
-            values = sorted({str(v) for v in df.get_column(column).drop_nulls().unique().to_list()})
-            combo.addItems(values)
-            restore = combo.findText(current)
-            combo.setCurrentIndex(restore if restore >= 0 else 0)
-            combo.blockSignals(False)
 
-    def _dims_by_label(self) -> Dict[str, str]:
-        return {label: col for col, label in DIMENSIONS.items()}
+    def on_scope_changed(self) -> None:
+        """Global scope bar changed: re-ask the current question under the
+        new scope. Without a standing result there is nothing to re-ask."""
+        if self._result is not None:
+            self.run()
 
-    def _selected_group_by(self) -> list:
-        by_label = self._dims_by_label()
-        out = []
+    def _selected_group_by(self) -> List[str]:
+        out: List[str] = []
         for combo in (self.group1_combo, self.group2_combo):
-            label = combo.currentText()
-            if label != _NO_DIM and label in by_label and by_label[label] not in out:
-                out.append(by_label[label])
+            col = _COL_BY_DIM_LABEL.get(combo.currentText())
+            if col is not None and col not in out:
+                out.append(col)
         return out
-
-    def _selected_scope(self) -> Dict[str, list]:
-        scope: Dict[str, list] = {}
-        if self.farm_combo.currentText() != "All":
-            scope["TankFarm"] = [self.farm_combo.currentText()]
-        if self.phase_combo.currentText() != "All":
-            scope["WastePhase"] = [self.phase_combo.currentText()]
-        if self.system_combo.currentText() != "All":
-            scope["TankSystem"] = [self.system_combo.currentText()]
-        return scope
 
     def run(self) -> None:
         if self.dataset is None or not self.dataset.is_loaded():
@@ -220,7 +260,7 @@ class QueryPage(QWidget):
         try:
             result = run_query(
                 self.dataset, subject=subject, basis=self.basis_combo.currentText(),
-                group_by=self._selected_group_by(), scope=self._selected_scope(),
+                group_by=self._selected_group_by(), scope=self.scope.as_scope(),
             )
         except ValueError as exc:
             QMessageBox.warning(self, "Query", str(exc))
@@ -243,33 +283,31 @@ class QueryPage(QWidget):
             self.warnings_label.setVisible(False)
 
         self._update_plot()
+        scope_note = f", scope: {self.scope.summary()}" if self.scope.is_active() else ""
         self.app_window.statusBar().showMessage(
             f"Query completed: {subject_label}, {self.basis_combo.currentText()}, "
-            f"{len(result.table):,} group(s)."
+            f"{len(result.table):,} group(s){scope_note}."
         )
 
+    # ------------------------------------------------------------------
+    def _scope_subtitle(self) -> str:
+        summary = self.scope.summary()
+        return f"Scope: {summary}" if summary else ""
+
     def _update_plot(self) -> None:
-        result = self._result
-        if result is None:
+        if self._result is None:
             return
-        group_by = self._selected_group_by()
-        log_x = result.basis in ("g", "kg", "Ci")
-        xlabel = {"g": "Total mass (g)", "kg": "Total mass (kg)", "Ci": "Total activity (Ci)",
-                  "wt%": "wt% of layer mass", "g/L": "g per liter"}[result.basis]
-        title = f"{self._subject_label} — {xlabel}"
-        if not group_by:
-            # No grouping: the informative picture is the per-member split.
-            df = result.member_table
-            label_col = "Member"
-        elif len(group_by) == 1:
-            df = result.table
-            label_col = group_by[0]
-        else:
-            df = result.table.copy()
-            df["_group"] = df[group_by[0]].astype(str) + " · " + df[group_by[1]].astype(str)
-            label_col = "_group"
-        ph.plot_barh(self.plot, df, label_col, result.value_column, title, xlabel,
-                     top_n=30, log_x=log_x)
+        plan = plan_plot(
+            self._result, self._selected_group_by(),
+            MARK_BY_LABEL[self.mark_combo.currentText()],
+            subject_label=self._subject_label, subtitle=self._scope_subtitle(),
+        )
+        if not plan.is_drawable:
+            self._last_spec = None
+            self.plot.show_message(plan.refusal)
+            return
+        self._last_spec = plan.spec
+        render_plot(self.plot, plan.data, plan.spec)
 
     def _export(self) -> None:
         if self._result is None or self.dataset is None:
@@ -284,7 +322,15 @@ class QueryPage(QWidget):
             "query_per_member": self._result.member_table,
             "query_notes": notes,
         }
-        out_dir = export_utils.export_named_tables(self.dataset, f"query_{self._subject_label}", tables)
+        context = {
+            "subject": self._subject_label,
+            "basis": self._result.basis,
+            "global_scope": self.scope.summary() or "(none)",
+            "plot_spec": json.dumps(self._last_spec.to_dict()) if self._last_spec else "(none)",
+        }
+        out_dir = export_utils.export_named_tables(
+            self.dataset, f"query_{self._subject_label}", tables, context=context,
+        )
         try:
             self.plot.figure.savefig(out_dir / "query_plot.png", bbox_inches="tight", dpi=200)
         except Exception:

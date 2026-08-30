@@ -877,9 +877,23 @@ compose it:
   Volume and ComponentDensity columns, summed over every in-scope layer of
   the group.
 - **Group by** — up to two dimensions: tank, farm, waste phase, waste
-  type, SST/DST, integrity, element, isotope, and more.
-- **Scope** (Advanced options) — restrict everything to one farm, phase,
-  or tank system first.
+  type, SST/DST, tank type, integrity, element, isotope, analyte
+  (species provenance: *which* species carry the subject), and more.
+- **Plot** — how the result is drawn (the plot grammar): bars; with a
+  second grouping dimension, grouped or **stacked bars** (second
+  dimension becomes the colored series), a **heatmap** (second dimension
+  becomes the columns), or a **box plot** (distribution of
+  dimension-1 values within each dimension-2 level). Whenever a chart
+  trims to a top-N, it says so on the figure itself.
+- **Guided questions** — the leftmost picker holds one-click starter
+  questions ("Where do salt formers concentrate?", "How much uranium is
+  in each tank, in grams?"). Picking one fills every control and runs,
+  so you see exactly which knobs produced the answer.
+- **Scope** — the app-wide scope bar above the workspace (farm, waste
+  phase, waste type, SST/DST) filters every query. The active scope is
+  stamped on the plot subtitle, in the status bar, and into the export
+  manifest — a figure filtered to one farm always says so on its face.
+  The bar only appears above workspaces that honor it.
 
 Three honesty rules the engine enforces everywhere:
 
@@ -900,6 +914,12 @@ Three honesty rules the engine enforces everywhere:
    bound."* Warnings above the results flag mixed decay baselines
    (2015-07-01 vs 2022-01-01 cohorts) and rows with no assigned
    uncertainty (Inventory_RSD = 0).
+
+Element Explorer's **"Ask in Query →"** button jumps here with the same
+subject — useful when you want the engine's apportioned/bridged numbers
+for something you were just exploring. (Element Explorer itself sums
+reported rows as-is; the two workspaces answer deliberately different
+questions, and each says which.)
 
 Every result exports as CSV with the warnings and disclosures alongside
 the numbers.

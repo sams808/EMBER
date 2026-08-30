@@ -135,6 +135,21 @@ class TestGroupingAndScope:
         assert len(res.table) == 2
         assert set(res.table["WasteSiteId"]) == {"241-A-101", "241-AN-104"}
 
+    def test_analyte_dimension_shows_species_provenance(self):
+        # Stage-2 dimension: grouping an ELEMENT subject by Analyte answers
+        # "which species carry it" -- each species row keeps its apportioned
+        # share, so the split sums to the ungrouped total.
+        res = run_query(_chem_dataset(), subject=("element", "S"), basis="kg", group_by=["Analyte"])
+        by_species = res.table.set_index("Analyte")["Total_kg"]
+        frac = rd.SPECIES_ELEMENT_MASS_FRACTIONS["SO4"]["S"]
+        assert by_species["SO4"] == pytest.approx(100.0 * frac)
+        assert by_species["Sulfide"] == pytest.approx(5.0)
+
+    def test_tank_type_dimension_groups_when_attributes_present(self, sample_dataset):
+        res = run_query(sample_dataset, subject=("element", "Fe"), basis="kg", group_by=["TankType"])
+        assert res.table["Total_kg"].sum() == pytest.approx(60.0)
+        assert "TankType" in res.table.columns
+
 
 class TestConcentrationBases:
     def test_wt_pct_uses_distinct_layer_masses_across_all_layers_of_the_group(self):

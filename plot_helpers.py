@@ -67,6 +67,39 @@ def numeric_plot_series(series: pd.Series) -> pd.Series:
     return out.where(np.isfinite(out), np.nan)
 
 
+def positive_value_frame(
+    data: pd.DataFrame, label_col: str, value_col: str, value_name: str = "_plot_value",
+) -> pd.DataFrame:
+    """The shared front half of every inventory bar chart: coerce the value
+    column to numbers, drop rows with no label or no value, and keep only
+    strictly positive values (log axes and bar lengths are meaningless
+    otherwise). Shared by the legacy renderers and the plot grammar so the
+    filtering policy can't drift between the two."""
+    pdf = data.copy()
+    pdf[value_name] = numeric_plot_series(pdf[value_col])
+    pdf = pdf.dropna(subset=[label_col, value_name])
+    return pdf[pdf[value_name] > 0]
+
+
+def bar_figure_height(
+    n_bars: int, per_bar: float = 0.26, floor: float = 4.5, ceiling: float = 16.0,
+) -> float:
+    """Figure height for a horizontal bar chart, scaled by bar count and
+    clamped both ways. A fixed height crams every label into the same
+    vertical space regardless of bar count (which is what made 40-bar
+    charts illegible); an unclamped one grows past the visible panel,
+    which has no scroll area. Callers pass it to
+    PlotWidget.set_figure_size_inches, whose own cap enforces the
+    viewport ceiling."""
+    return min(max(floor, n_bars * per_bar), ceiling)
+
+
+def heatmap_ytick_step(n_rows: int, dense_limit: int = 80, target: int = 40) -> int:
+    """Row-label thinning for tall heatmaps: label every row while they
+    still fit, then every Nth so labels stay readable."""
+    return 1 if n_rows <= dense_limit else max(1, n_rows // target)
+
+
 def color_by_highlight(
     labels: Sequence[str], highlighted: Optional[str],
     base_labels: Optional[Sequence[str]] = None,
@@ -128,10 +161,7 @@ def plot_barh(
         panel.show_message("No data to plot")
         return
 
-    pdf = data.copy()
-    pdf["_plot_value"] = numeric_plot_series(pdf[value_col])
-    pdf = pdf.dropna(subset=[label_col, "_plot_value"])
-    pdf = pdf[pdf["_plot_value"] > 0]
+    pdf = positive_value_frame(data, label_col, value_col)
     if pdf.empty:
         panel.show_message("No positive values to plot")
         return
@@ -140,18 +170,9 @@ def plot_barh(
     pdf["_plot_label"] = make_unique_plot_labels(pdf, label_col)
     pdf = pdf.iloc[::-1]  # reverse after sort/head so the largest value is at the top of barh
 
-    # Scale figure height with the bar count, the same way plot_heatmap
-    # scales with tank/element count below -- a fixed-height figure crams
-    # every label into the same vertical space regardless of top_n, which
-    # is what makes a 40-bar chart's y-tick labels overlap into
-    # illegibility even though the panel has plenty of unused space below.
-    # set_figure_size_inches() caps this at what's actually visible on its
-    # own (there's no scroll area around the canvas), so no manual cap
-    # needed here.
     ax = panel.reset_axes()
-    height = min(max(4.5, len(pdf) * 0.26), 16.0)
     width = panel.figure.get_size_inches()[0]
-    panel.set_figure_size_inches(width, height)
+    panel.set_figure_size_inches(width, bar_figure_height(len(pdf)))
 
     colors = color_by_highlight(
         pdf["_plot_label"].astype(str).tolist(), highlighted_label,
@@ -197,14 +218,9 @@ def plot_heatmap(panel, wide: pd.DataFrame, unit: str, mode: str, title: str) ->
     im = ax.imshow(arr, aspect="auto", interpolation="nearest")
     ax.set_xticks(np.arange(len(elements)))
     ax.set_xticklabels(elements, rotation=90)
-    if len(labels_y) <= 80:
-        ax.set_yticks(np.arange(len(labels_y)))
-        ax.set_yticklabels(labels_y, fontsize=7)
-    else:
-        step = max(1, len(labels_y) // 40)
-        yticks = np.arange(0, len(labels_y), step)
-        ax.set_yticks(yticks)
-        ax.set_yticklabels([labels_y[i] for i in yticks], fontsize=7)
+    yticks = np.arange(0, len(labels_y), heatmap_ytick_step(len(labels_y)))
+    ax.set_yticks(yticks)
+    ax.set_yticklabels([labels_y[i] for i in yticks], fontsize=7)
     ax.set_xlabel("Element")
     ax.set_ylabel("Tank")
     ax.set_title(title)
@@ -933,9 +949,8 @@ def plot_tank_element_bars(
     df = df.iloc[::-1]  # barh draws bottom-to-top; reverse for natural reading order top-to-bottom
 
     ax = panel.reset_axes()
-    height = min(max(4.5, len(df) * 0.28), 16.0)
     width = panel.figure.get_size_inches()[0]
-    panel.set_figure_size_inches(width, height)
+    panel.set_figure_size_inches(width, bar_figure_height(len(df), per_bar=0.28))
 
     labels = make_unique_plot_labels(df, "WasteSiteId")
     y = np.arange(len(df))
@@ -1283,9 +1298,8 @@ def plot_vitrification_score_breakdown(panel, data: pd.DataFrame, title: str = "
     pdf = pdf.iloc[::-1]  # barh draws bottom-to-top; reverse for highest score at the top
 
     ax = panel.reset_axes()
-    height = min(max(4.5, len(pdf) * 0.32), 16.0)
     width = panel.figure.get_size_inches()[0]
-    panel.set_figure_size_inches(width, height)
+    panel.set_figure_size_inches(width, bar_figure_height(len(pdf), per_bar=0.32))
 
     labels = make_unique_plot_labels(pdf, "WasteSiteId")
     y = np.arange(len(pdf))
