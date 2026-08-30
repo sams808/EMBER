@@ -147,6 +147,7 @@ class HelpDialog(QDialog):
 # plain strings rather than importing the NAV_* constants to avoid a
 # circular import, since qt_shell.py is what imports THIS module).
 GETTING_STARTED_OPTIONS = [
+    ("Ask a combined question", "Any element/analyte/basket, any unit basis, grouped however you want -- one query surface.", "Query"),
     ("Explore a specific tank", "See a tank's full composition -- one tank, or several side by side.", "Tank Explorer"),
     ("Find which elements move together", "Statistical correlations and associations across the whole dataset.", "Correlations"),
     ("Screen tanks for vitrification", "Oxide chemistry, candidate search, blend partners.", "Vitrification"),

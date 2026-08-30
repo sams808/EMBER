@@ -206,13 +206,50 @@ class TestCleanDataframe:
         assert df.filter(pl.col("WasteSiteId") == "241-A-101")["TankFarm"].unique().to_list() == ["A"]
         assert df.filter(pl.col("WasteSiteId") == "241-AN-104")["TankFarm"].unique().to_list() == ["AN"]
 
-    def test_inventory_positive_flag(self, sample_dataset):
+    def test_isotope_columns_resolve_radionuclides(self, sample_dataset):
+        # v2: the mass number the parser always captured is now kept --
+        # 137Cs no longer collapses indistinguishably into Element="Cs".
         df = sample_dataset.df
-        assert df["InventoryPositive"].all()
+        cs = df.filter(pl.col("Analyte") == "137Cs").head(1)
+        assert cs["Isotope"].item() == "137Cs"
+        assert cs["MassNumber"].item() == 137
+        assert cs["IsMetastable"].item() is False
 
-    def test_log10_inventory_matches_positive_inventory(self, sample_dataset):
-        df = sample_dataset.df
-        assert df["log10_Inventory"].null_count() == 0  # all fixture rows have positive inventory
+    def test_metastable_isotope_flagged(self, sample_dataset):
+        cd = sample_dataset.df.filter(pl.col("Analyte") == "113mCd")
+        assert cd["Isotope"].item() == "113mCd"
+        assert cd["MassNumber"].item() == 113
+        assert cd["IsMetastable"].item() is True
+
+    def test_combined_isotope_keeps_label_without_single_mass_number(self, sample_dataset):
+        pu = sample_dataset.df.filter(pl.col("Analyte") == "239/240Pu")
+        assert pu["Isotope"].item() == "239/240Pu"
+        assert pu["MassNumber"].item() is None
+
+    def test_non_isotope_analytes_have_null_isotope(self, sample_dataset):
+        fe = sample_dataset.df.filter(pl.col("Analyte") == "Fe").head(1)
+        assert fe["Isotope"].item() is None
+        assert fe["MassNumber"].item() is None
+
+    def test_dormant_v1_columns_are_gone(self, sample_dataset):
+        # InventoryPositive/log10_Inventory were computed on every load and
+        # read nowhere -- deleted in the v2 schema.
+        assert "InventoryPositive" not in sample_dataset.df.columns
+        assert "log10_Inventory" not in sample_dataset.df.columns
+
+    def test_in_service_year_parsed_from_month_year_text(self, sample_dataset):
+        # Attributes fixture carries no InServiceDate -- exercise the parse
+        # directly on representative real formats ("1/1956", "1953").
+        import data_model as dm
+        dataset = dm.HanfordDataset()
+        attrs = dataset._clean_attributes_dataframe(pl.DataFrame({
+            "Name": ["241-A-101", "241-B-101", "241-C-101"],
+            "InServiceDate": ["1/1956", "1953", None],
+        }))
+        out = {r["WasteSiteId"]: r["InServiceYear"] for r in attrs.iter_rows(named=True)}
+        assert out["241-A-101"] == 1956
+        assert out["241-B-101"] == 1953
+        assert out["241-C-101"] is None
 
     def test_duplicate_key_aggregates_correctly(self, sample_dataset):
         # Two rows share (WasteSiteId="241-A-101", Analyte="Fe") across

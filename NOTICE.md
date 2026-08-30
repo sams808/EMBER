@@ -86,16 +86,17 @@ without editing anything.
 
 ## 2. General architecture
 
-The nav sidebar has 8 workspaces:
+The nav sidebar has 9 workspaces:
 
 1. **Overview**
-2. **Element Explorer**
-3. **Tank Attributes**
-4. **Tank Explorer**
-5. **Heatmaps**
-6. **Correlations** — Quick Scan / Association Workbench (kg) / Structure sub-tabs
-7. **Vitrification** — Screening / Oxide Chemistry / Candidate Search / Blend Partners sub-tabs
-8. **Figure Composer** — combine any of the plots above into one multi-panel publication figure
+2. **Query** (§19) — one flexible question surface: any element/analyte/basket × any basis × any grouping
+3. **Element Explorer**
+4. **Tank Attributes**
+5. **Tank Explorer**
+6. **Heatmaps**
+7. **Correlations** — Quick Scan / Association Workbench (kg) / Structure sub-tabs
+8. **Vitrification** — Screening / Oxide Chemistry / Candidate Search / Blend Partners sub-tabs
+9. **Figure Composer** — combine any of the plots above into one multi-panel publication figure
 
 **Debug / Export** (§11) isn't a workspace — it's a troubleshooting utility
 (live log viewer, one-click debug-bundle export), reached from **Help →
@@ -855,3 +856,50 @@ notice). Built on polars, pandas, numpy, matplotlib, seaborn, scipy,
 scikit-learn, networkx, plotly, xraydb, and PySide6. Optical basicity
 values: Rodriguez & McCloy, PNNL-20184/EMSP-RPT-003 (2011). GlassNet:
 Cassar, *Ceramics International* 49 (2023) 36013, trained on SciGlass.
+
+---
+
+## 19. Query
+
+The Query workspace is one flexible question surface over the whole
+dataset — the first piece of Ember's query engine. Instead of hunting for
+a workspace whose fixed plot list happens to include your question, you
+compose it:
+
+- **Subject** — an element symbol, an exact analyte label, or a *basket*
+  (a named group of elements/analytes that queries as one species; starter
+  baskets ship for salt formers, halides, glass formers, RCRA metals, and
+  mobile long-lived nuclides).
+- **Basis** — `kg` (kg rows only), `Ci` (activity only), `g` (kg **and**
+  Ci on one mass axis: Ci rows are bridged to grams via ICRP-107 specific
+  activities), `wt%` (grams per gram of layer mass), or `g/L` (grams per
+  liter of layer volume). Layer masses/volumes come from the per-layer
+  Volume and ComponentDensity columns, summed over every in-scope layer of
+  the group.
+- **Group by** — up to two dimensions: tank, farm, waste phase, waste
+  type, SST/DST, integrity, element, isotope, and more.
+- **Scope** (Advanced options) — restrict everything to one farm, phase,
+  or tank system first.
+
+Three honesty rules the engine enforces everywhere:
+
+1. **Stoichiometric apportionment.** An element receives its *mass
+   fraction* of every species reporting it: S gets 32.06/96.06 of SO₄'s
+   mass, N gets 14.007/62.005 of NO₃'s, computed from CIAAW 2021 atomic
+   weights. (Elsewhere in the app, legacy views may still attribute a
+   species' full mass to its first element — the Query engine never does.)
+2. **Units are never mixed silently.** kg and Ci are separate worlds; the
+   `g` basis unites them only through nuclide-specific activities
+   (ICRP-107 half-lives, updated to current ENSDF/NUBASE evaluations
+   where they differ >1%). Combined-pair labels (239/240Pu, 243/244Cm,
+   144Ce/Pr) carry no single specific activity and are **excluded from
+   mass bases with a visible warning** — never silently dropped.
+3. **Every resolution is disclosed.** The Notes tab (and every export)
+   states per member exactly what it resolved to — e.g. iodine: *"129I
+   (Ci→g bridged); no stable-isotope reporting exists — mass is a lower
+   bound."* Warnings above the results flag mixed decay baselines
+   (2015-07-01 vs 2022-01-01 cohorts) and rows with no assigned
+   uncertainty (Inventory_RSD = 0).
+
+Every result exports as CSV with the warnings and disclosures alongside
+the numbers.

@@ -77,6 +77,7 @@ class TestLoadNoticeSection:
             5: "Overview", 6: "Element Explorer", 7: "Tank Attributes",
             8: "Tank Explorer", 9: "Heatmaps", 10: "Correlations",
             11: "Debug", 12: "Vitrification", 13: "Figure Composer",
+            19: "Query",
         }
         for number, expected_word in real_sections.items():
             section = qh.load_notice_section(number)
@@ -142,7 +143,7 @@ class TestGettingStartedDialog:
         # this is checked against a plain literal list of the real
         # NAV_ITEMS values instead of importing them.
         real_nav_items = {
-            "Overview", "Element Explorer", "Tank Attributes", "Tank Explorer",
+            "Overview", "Query", "Element Explorer", "Tank Attributes", "Tank Explorer",
             "Heatmaps", "Correlations", "Vitrification", "Figure Composer",
         }
         for _label, _explanation, target in qh.GETTING_STARTED_OPTIONS:

@@ -27,6 +27,7 @@ from qt_figure_composer import FigureComposerPage
 from qt_heatmap import HeatmapPage
 from qt_help import ABOUT_HTML, APP_NAME, APP_VERSION, GettingStartedDialog, HelpDialog, asset_path
 from qt_overview import OverviewPage
+from qt_query import QueryPage
 from qt_tank_attributes import TankAttributesPage
 from qt_tank_explorer import TankExplorerPage
 from qt_vitrification import VitrificationPage
@@ -34,6 +35,7 @@ from qt_widgets import StatusLogger
 from qt_worker import run_in_thread
 
 NAV_OVERVIEW = "Overview"
+NAV_QUERY = "Query"
 NAV_EXPLORER = "Element Explorer"
 NAV_TANK_ATTRS = "Tank Attributes"
 NAV_TANK_EXPLORER = "Tank Explorer"
@@ -43,7 +45,7 @@ NAV_VITRIFICATION = "Vitrification"
 NAV_FIGURE_COMPOSER = "Figure Composer"
 
 NAV_ITEMS = [
-    NAV_OVERVIEW, NAV_EXPLORER, NAV_TANK_ATTRS, NAV_TANK_EXPLORER,
+    NAV_OVERVIEW, NAV_QUERY, NAV_EXPLORER, NAV_TANK_ATTRS, NAV_TANK_EXPLORER,
     NAV_HEATMAPS, NAV_CORRELATIONS, NAV_VITRIFICATION, NAV_FIGURE_COMPOSER,
 ]
 
@@ -52,6 +54,7 @@ NAV_ITEMS = [
 # this is the cheapest, always-visible form of self-explanation.
 NAV_DESCRIPTIONS: Dict[str, str] = {
     NAV_OVERVIEW: "Start here: dataset audit -- units, top elements/analytes, waste-phase/type/farm breakdowns, missing data.",
+    NAV_QUERY: "Ask any combined question: element/analyte/basket x kg/Ci/grams/wt%/g-per-L x any grouping -- with honest unit bridging.",
     NAV_EXPLORER: "Search one element or analyte: which tanks have it, what else tends to be there, typical composition.",
     NAV_TANK_ATTRS: "Browse tank engineering metadata -- type, capacity, integrity, status -- joined from the attributes file.",
     NAV_TANK_EXPLORER: "Compare full composition across several chosen tanks side by side.",
@@ -140,6 +143,9 @@ class EmberMainWindow(QMainWindow):
         self.overview_page = OverviewPage(self)
         self.stack.addWidget(self.overview_page)
         pump()
+        self.query_page = QueryPage(self)
+        self.stack.addWidget(self.query_page)
+        pump()
         self.explorer_page = ExplorerPage(self)
         self.stack.addWidget(self.explorer_page)
         pump()
@@ -168,6 +174,7 @@ class EmberMainWindow(QMainWindow):
         # assumed to -- always resolve through this dict.
         self._pages_by_nav: Dict[str, QWidget] = {
             NAV_OVERVIEW: self.overview_page,
+            NAV_QUERY: self.query_page,
             NAV_EXPLORER: self.explorer_page,
             NAV_TANK_ATTRS: self.tank_attrs_page,
             NAV_TANK_EXPLORER: self.tank_explorer_page,

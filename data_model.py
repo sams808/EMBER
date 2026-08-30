@@ -30,11 +30,16 @@ from elements import (
     classify_analyte,
     element_list_padded,
     element_list_string,
+    parse_isotope,
     primary_element_from_analyte,
     tank_farm_from_id,
 )
 
-CACHE_SCHEMA_VERSION = "ember_v1"
+# v2 (Stage 1): +Isotope/MassNumber/IsMetastable, +InServiceYear, QA columns
+# (Inventory_RSD/VolumeRSD/ComponentDensity) properly scrubbed as numerics,
+# dormant InventoryPositive/log10_Inventory dropped. Bumping this makes
+# every stale v1 parquet cache rebuild instead of silently missing columns.
+CACHE_SCHEMA_VERSION = "ember_v2"
 
 DEFAULT_COMPOSITION_FILENAMES = ["Hanford.csv", "hanford.csv", "Hanford.tsv", "hanford.tsv"]
 DEFAULT_ATTRIBUTES_FILENAMES = [
@@ -49,12 +54,21 @@ _OPTIONAL_COMPOSITION_DEFAULTS = {
     "WastePhase": None, "WasteType": None, "Volume": None, "VolumeUnits": None,
     "AdjustedConcentration": None, "AdjustedConcentrationUnits": None,
     "DecayDate": None, "PublishedDate": None, "CCBLog": None,
+    "Inventory_RSD": None, "VolumeRSD": None, "ComponentDensity": None, "DensityUnits": None,
 }
 _COMPOSITION_TEXT_COLUMNS = [
     "WasteSiteId", "Analyte", "WastePhase", "WasteType", "Units",
-    "VolumeUnits", "AdjustedConcentrationUnits", "DecayDate", "PublishedDate", "CCBLog",
+    "VolumeUnits", "AdjustedConcentrationUnits", "DensityUnits",
+    "DecayDate", "PublishedDate", "CCBLog",
 ]
-_COMPOSITION_NUMERIC_COLUMNS = ["Inventory", "Volume", "AdjustedConcentration"]
+# The QA columns (RSDs, density) get the same comma/null scrubbing as
+# Inventory -- previously they survived on schema inference alone, which
+# happened to work for the current export but would silently produce a
+# string column on any export carrying thousands separators or "undefined".
+_COMPOSITION_NUMERIC_COLUMNS = [
+    "Inventory", "Volume", "AdjustedConcentration",
+    "Inventory_RSD", "VolumeRSD", "ComponentDensity",
+]
 
 _ATTRIBUTE_OPTIONAL_COLUMNS = [
     "TankType", "Capacity", "CapacityUnits", "Diameter", "DiameterUnits",
@@ -298,18 +312,28 @@ class HanfordDataset:
         # rows (this is the same approach the old app used).
         analytes = df.get_column("Analyte").to_list()
         site_ids = df.get_column("WasteSiteId").to_list()
+        # The mass number was always captured by the isotope regexes and
+        # then discarded -- 137Cs and 134Cs silently merged into "Cs".
+        # These three columns make every nuclide first-class: Isotope keeps
+        # the label (incl. combined forms like 239/240Pu), MassNumber the
+        # parsed A (null for combined pairs), IsMetastable the m flag.
+        iso_parsed = [parse_isotope(a) for a in analytes]
         df = df.with_columns([
             pl.Series("Element", [primary_element_from_analyte(a) for a in analytes], dtype=pl.Utf8),
             pl.Series("ElementList", [element_list_string(a) for a in analytes], dtype=pl.Utf8),
             pl.Series("ElementListPadded", [element_list_padded(a) for a in analytes], dtype=pl.Utf8),
             pl.Series("AnalyteClass", [classify_analyte(a) for a in analytes], dtype=pl.Utf8),
             pl.Series("TankFarm", [tank_farm_from_id(w) for w in site_ids], dtype=pl.Utf8),
+            pl.Series(
+                "Isotope",
+                [str(a).strip() if matched else None for a, (_, _, matched) in zip(analytes, iso_parsed)],
+                dtype=pl.Utf8,
+            ),
+            pl.Series("MassNumber", [mass for (mass, _, _) in iso_parsed], dtype=pl.Int64),
+            pl.Series("IsMetastable", [meta for (_, meta, _) in iso_parsed], dtype=pl.Boolean),
         ])
-
-        df = df.with_columns([
-            (pl.col("Inventory") > 0).fill_null(False).alias("InventoryPositive"),
-            pl.when(pl.col("Inventory") > 0).then(pl.col("Inventory").log10()).otherwise(None).alias("log10_Inventory"),
-        ])
+        # (The former InventoryPositive/log10_Inventory columns were
+        # computed here and never read anywhere -- dropped in v2.)
         return df
 
     def _clean_attributes_dataframe(self, df: pl.DataFrame) -> pl.DataFrame:
@@ -344,6 +368,11 @@ class HanfordDataset:
             integrity_lower.str.contains("leaker", literal=True).fill_null(False).alias("IsLeakerOrAssumedLeaker"),
             status_upper.str.contains("WI", literal=True).fill_null(False).alias("HasWIStatus"),
             pl.col("WasteSiteId").map_elements(tank_farm_from_id, return_dtype=pl.Utf8).alias("TankFarm"),
+            # InServiceDate is "M/YYYY" or bare "YYYY" text ("1/1956",
+            # "1953") -- the year alone unlocks tank-age/era questions that
+            # were unanswerable while this stayed an unparsed string.
+            pl.col("InServiceDate").cast(pl.Utf8, strict=False)
+              .str.extract(r"(\d{4})", 1).cast(pl.Int64, strict=False).alias("InServiceYear"),
         ])
         return df.unique(subset=["WasteSiteId"], keep="first")
 

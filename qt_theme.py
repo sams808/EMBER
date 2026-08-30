@@ -99,6 +99,14 @@ def build_stylesheet(palette: dict = PALETTE) -> str:
         font-size: 12px;
         color: {p['muted']};
     }}
+    QLabel#WarningNote {{
+        font-size: 12px;
+        color: {p['warn']};
+        background: {p['bg_alt']};
+        border: 1px solid {p['border']};
+        border-radius: 4px;
+        padding: 5px 10px;
+    }}
     QToolButton#CollapsibleHeader {{
         background: transparent;
         border: none;

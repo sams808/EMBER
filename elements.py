@@ -278,6 +278,44 @@ def tank_farm_from_id(waste_site_id: object) -> Optional[str]:
     return None
 
 
+_ISO_COMBINED_RE = re.compile(r"^\s*\d+\s*/\s*\d+\s*m?\s*[A-Za-z]{1,2}\s*$", re.IGNORECASE)
+_ISO_PARENT_DAUGHTER_RE = re.compile(r"^\s*(\d+)\s*(m)?\s*[A-Z][a-z]?\s*/\s*[A-Z][a-z]?\s*$")
+_ISO_MASS_START_RE = re.compile(r"^\s*(\d+)\s*(m)?\s*[A-Z][a-z]?\s*$")
+_ISO_MASS_END_RE = re.compile(r"^\s*[A-Z][a-z]?\s*[-_]?\s*(\d+)\s*(m)?\s*$")
+
+
+def parse_isotope(analyte: object) -> Tuple[Optional[int], bool, bool]:
+    """(mass_number, is_metastable, is_isotope_label) for a radionuclide
+    analyte label. The mass number was always captured by the parsing
+    regexes and then thrown away -- keeping it is what makes 137Cs vs
+    134Cs distinguishable (they both collapse to Element="Cs").
+
+    Handled forms (all present in the real BBI analyte list):
+      "137Cs" -> (137, False, True)     "113mCd"    -> (113, True, True)
+      "3H"    -> (3, False, True)       "Cs-137m"   -> (137, True, True)
+      "239/240Pu" -> (None, False, True)  combined pair: no single A
+      "144Ce/Pr"  -> (144, False, True)   parent/daughter: parent's A
+      "Fe" / "SO4" / "Total Alpha" -> (None, False, False)
+    """
+    if analyte is None:
+        return (None, False, False)
+    s = str(analyte).strip()
+    if not s:
+        return (None, False, False)
+    if _ISO_COMBINED_RE.match(s):
+        return (None, False, True)
+    m = _ISO_PARENT_DAUGHTER_RE.match(s)
+    if m:
+        return (int(m.group(1)), bool(m.group(2)), True)
+    m = _ISO_MASS_START_RE.match(s)
+    if m:
+        return (int(m.group(1)), bool(m.group(2)), True)
+    m = _ISO_MASS_END_RE.match(s)
+    if m:
+        return (int(m.group(1)), bool(m.group(2)), True)
+    return (None, False, False)
+
+
 def classify_analyte(analyte: object) -> str:
     """Rough analyte classification: radionuclide / element / compound-formula
     / unparsed. Used for audit/overview breakdowns, not for numeric aggregation."""

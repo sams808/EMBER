@@ -204,3 +204,28 @@ class TestClassifyAnalyte:
 
     def test_unparsed(self):
         assert els.classify_analyte("Benzene") == "unparsed"
+
+
+class TestParseIsotope:
+    def test_mass_start_forms(self):
+        assert els.parse_isotope("137Cs") == (137, False, True)
+        assert els.parse_isotope("3H") == (3, False, True)
+        assert els.parse_isotope("113mCd") == (113, True, True)
+
+    def test_mass_end_form(self):
+        assert els.parse_isotope("Cs-137m") == (137, True, True)
+
+    def test_combined_pair_has_no_single_mass_number(self):
+        assert els.parse_isotope("239/240Pu") == (None, False, True)
+        assert els.parse_isotope("243/244Cm") == (None, False, True)
+
+    def test_parent_daughter_uses_parent_mass(self):
+        assert els.parse_isotope("144Ce/Pr") == (144, False, True)
+
+    def test_non_isotopes_rejected(self):
+        assert els.parse_isotope("Fe") == (None, False, False)
+        assert els.parse_isotope("SO4") == (None, False, False)
+        assert els.parse_isotope("TotalAlpha") == (None, False, False)
+        assert els.parse_isotope("2-Butanone") == (None, False, False)  # organic; digits are not a mass number
+        assert els.parse_isotope(None) == (None, False, False)
+        assert els.parse_isotope("") == (None, False, False)
