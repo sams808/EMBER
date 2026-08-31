@@ -64,7 +64,11 @@ PALETTES: Tuple[str, ...] = ("okabe-ito", "viridis", "single")
 MAX_BARS = 60
 MAX_HUE_LEVELS = 12
 MAX_FACETS = 12
-MAX_HEATMAP_CELLS = 4000
+# Sized to clear the real dataset's full matrix (177 tanks x up to 120
+# elements = 21,240) with headroom: the guardrail exists to stop an
+# absurd render, not to clip the data the app ships with. Legibility of
+# dense matrices is handled by tick thinning, not by dropping rows.
+MAX_HEATMAP_CELLS = 30000
 
 # House plot colors. ACCENT_COLOR/BASE_COLOR come from plot_helpers so the
 # grammar and the legacy renderers can never drift into two different
@@ -107,6 +111,9 @@ class PlotSpec:
     xlabel: str = ""                 # empty -> derived from VALUE_AXIS_LABELS when x is an engine value column
     ylabel: str = ""
     palette: str = "okabe-ito"
+    # heatmap only: "row" divides each row by its own total, turning
+    # absolute values into a within-row composition. The colorbar says so.
+    normalize: str = "none"
     annotations: Tuple[Dict, ...] = ()  # e.g. ({"kind": "vline", "value": 100.0, "label": "limit"},)
 
     def to_dict(self) -> Dict:
@@ -139,6 +146,10 @@ def validate_spec(spec: PlotSpec, columns: List[str]) -> None:
         raise ValueError(f"Unknown palette {spec.palette!r}; expected one of {list(PALETTES)}")
     if spec.sort not in ("value", "label", "none"):
         raise ValueError(f"Unknown sort {spec.sort!r}; expected 'value', 'label', or 'none'")
+    if spec.normalize not in ("none", "row"):
+        raise ValueError(f"Unknown normalize {spec.normalize!r}; expected 'none' or 'row'")
+    if spec.normalize == "row" and spec.mark != "heatmap":
+        raise ValueError("normalize='row' applies to the heatmap mark only")
     required = {"x": spec.x, "y": spec.y}
     for role, col in required.items():
         if not col:
@@ -466,6 +477,10 @@ def _render_heatmap(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
         pivot = pivot.head(max_rows)
 
     values = pivot.to_numpy(dtype=float)
+    if spec.normalize == "row":
+        with np.errstate(invalid="ignore", divide="ignore"):
+            denom = np.nansum(values, axis=1, keepdims=True)
+            values = np.where(denom > 0, values / denom, np.nan)
     if spec.log_x:
         # Same non-positive -> NaN policy as every other log view in the
         # app (matrix_science.log10_safe), not a second local copy.
@@ -488,6 +503,8 @@ def _render_heatmap(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
     ax.set_yticks(range(0, n_rows, step))
     ax.set_yticklabels([str(i) for i in pivot.index[::step]], fontsize=7)
     base_label = spec.xlabel or default_axis_label(spec.x)
+    if spec.normalize == "row":
+        base_label = f"fraction of row total ({base_label})"
     cbar_label = f"log10 {base_label}" if spec.log_x else base_label
     panel.figure.colorbar(im, ax=ax, fraction=0.025, pad=0.02, label=cbar_label)
     _draw_annotations(ax, spec)

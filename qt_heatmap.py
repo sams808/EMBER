@@ -1,6 +1,18 @@
 """
 qt_heatmap.py — Heatmaps workspace: tank x element inventory matrices.
-Ported from the old app's HeatmapTab.
+
+Stage 2 migration: the matrix now comes from the query engine
+(matrix_query.engine_matrix), so an element receives its stoichiometric
+share of every species reporting it instead of the whole mass of every
+analyte that happens to name it first. That changes real numbers -- on
+the shipped dataset nitrogen falls to 0.24x and oxygen rises 15.6x, from
+rank 6 to rank 1 -- so the older attribution stays selectable, and the
+Attribution row on the figure says which one produced it.
+
+Rendering goes through the L2 plot grammar rather than the frozen legacy
+heatmap renderer, which is what gives this workspace the global scope
+bar (it honors on_scope_changed) and the guardrail/disclosure behavior
+for free.
 """
 from __future__ import annotations
 
@@ -13,22 +25,32 @@ from PySide6.QtWidgets import (
 )
 
 import export_utils
+import matrix_query as mq
 import matrix_science as msci
-import plot_helpers as ph
 from data_model import HanfordDataset
+from plot_grammar import PlotSpec, render_plot
 from qt_help import make_help_button
+from qt_scope import GlobalScope
 from qt_widgets import CollapsibleSection, DataFrameTableView, PlotWidget
 
-MODES = ["log10_inventory", "inventory", "fraction"]
+# Display mode -> (log_x, normalize). The engine supplies absolute values;
+# these are presentation transforms, applied by the grammar.
+MODES = {
+    "log10_inventory": (True, "none"),
+    "inventory": (False, "none"),
+    "fraction": (False, "row"),
+}
 
 
 class HeatmapPage(QWidget):
-    def __init__(self, app_window, parent: Optional[QWidget] = None):
+    def __init__(self, app_window, scope: Optional[GlobalScope] = None,
+                 parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.app_window = app_window
+        self.scope = scope if scope is not None else GlobalScope(self)
         self.dataset: Optional[HanfordDataset] = None
-        self._long_df: pd.DataFrame = pd.DataFrame()
-        self._wide_df: pd.DataFrame = pd.DataFrame()
+        self._result = mq.MatrixResult()
+        self._result_scope = ""
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -39,6 +61,9 @@ class HeatmapPage(QWidget):
         title = QLabel("Heatmaps")
         title.setObjectName("SectionTitle")
         header.addWidget(title)
+        note = QLabel("Tank × element matrix — every element gets its stoichiometric share.")
+        note.setObjectName("SectionNote")
+        header.addWidget(note)
         header.addStretch(1)
         header.addWidget(make_help_button(self, 9, "Heatmaps"))
         export_btn = QPushButton("Export inputs")
@@ -47,15 +72,30 @@ class HeatmapPage(QWidget):
         root.addLayout(header)
 
         primary = QHBoxLayout()
-        primary.addWidget(QLabel("Unit"))
+        primary.addWidget(QLabel("Basis"))
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(["kg", "Ci"])
+        self.unit_combo.setToolTip("kg keeps mass rows only; Ci keeps activity rows only.")
         primary.addWidget(self.unit_combo)
         primary.addWidget(QLabel("Mode"))
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(MODES)
-        self.mode_combo.setToolTip("How cell values are scaled: raw inventory, log10 inventory, or fraction of tank total.")
+        self.mode_combo.addItems(list(MODES))
+        self.mode_combo.setToolTip(
+            "How cell values are scaled: raw inventory, log10 inventory,\n"
+            "or each tank's composition as a fraction of its own row total."
+        )
+        self.mode_combo.currentTextChanged.connect(lambda _t: self._update_plot())
         primary.addWidget(self.mode_combo)
+        primary.addWidget(QLabel("Attribution"))
+        self.attribution_combo = QComboBox()
+        self.attribution_combo.addItems(mq.ATTRIBUTIONS)
+        self.attribution_combo.setToolTip(
+            "Apportioned: an element receives its mass fraction of every species\n"
+            "reporting it (S gets 32.06/96.06 of SO4).\n"
+            "As reported: each analyte's full mass goes to its first parsed element\n"
+            "— the older behavior, kept for reproducing earlier figures."
+        )
+        primary.addWidget(self.attribution_combo)
         build_btn = QPushButton("Build heatmap")
         build_btn.setObjectName("Primary")
         build_btn.clicked.connect(self.run)
@@ -76,6 +116,9 @@ class HeatmapPage(QWidget):
         self.min_inv_spin = QDoubleSpinBox()
         self.min_inv_spin.setRange(0.0, 1e12)
         self.min_inv_spin.setDecimals(6)
+        self.min_inv_spin.setToolTip(
+            "Row-level floor, applied before summing (as-reported attribution only)."
+        )
         adv_row.addWidget(self.min_inv_spin)
         adv_row.addWidget(QLabel("max tanks (0=all)"))
         self.max_tanks_spin = QSpinBox()
@@ -86,14 +129,22 @@ class HeatmapPage(QWidget):
         adv.addLayout(adv_row)
         root.addWidget(self.advanced_section)
 
+        self.warnings_label = QLabel("")
+        self.warnings_label.setWordWrap(True)
+        self.warnings_label.setObjectName("WarningNote")
+        self.warnings_label.setVisible(False)
+        root.addWidget(self.warnings_label)
+
         splitter = QSplitter()
         root.addWidget(splitter, 1)
 
         self.tables = QTabWidget()
         self.long_view = DataFrameTableView(title="Heatmap long input")
         self.wide_view = DataFrameTableView(title="Heatmap wide matrix", max_rows_display=250)
+        self.notes_view = DataFrameTableView(title="Notes", max_rows_display=200)
         self.tables.addTab(self.long_view, "Long")
         self.tables.addTab(self.wide_view, "Wide")
+        self.tables.addTab(self.notes_view, "Notes")
         splitter.addWidget(self.tables)
 
         self.plot = PlotWidget()
@@ -116,10 +167,19 @@ class HeatmapPage(QWidget):
             if restore >= 0:
                 self.unit_combo.setCurrentIndex(restore)
         self.unit_combo.blockSignals(False)
-        self._long_df, self._wide_df = pd.DataFrame(), pd.DataFrame()
-        self.long_view.set_dataframe(self._long_df)
-        self.wide_view.set_dataframe(self._wide_df)
+        self._result = mq.MatrixResult()
+        self._result_scope = ""
+        for view in (self.long_view, self.wide_view, self.notes_view):
+            view.set_dataframe(pd.DataFrame())
+        self.warnings_label.setVisible(False)
         self.plot.show_message("Build a heatmap to see results.")
+
+    def on_scope_changed(self) -> None:
+        """Rebuild under the new scope, but only if a matrix is standing --
+        the scope bar is visible above this workspace precisely because it
+        honors this."""
+        if not self._result.wide_df.empty:
+            self.run()
 
     def run(self) -> None:
         if self.dataset is None or not self.dataset.is_loaded():
@@ -127,39 +187,101 @@ class HeatmapPage(QWidget):
             return
         unit = self.unit_combo.currentText()
         top_n = self.top_n_spin.value()
-        min_inv = self.min_inv_spin.value()
-        mode = self.mode_combo.currentText()
-        max_tanks = self.max_tanks_spin.value()
+        scope = self.scope.as_scope()
 
         tank_subset = None
-        if max_tanks > 0:
-            tank_subset = msci.top_tanks_by_inventory(self.dataset, unit, max_tanks)
+        if self.max_tanks_spin.value() > 0:
+            tank_subset = msci.top_tanks_by_inventory(
+                mq._scoped_copy(self.dataset, scope), unit, self.max_tanks_spin.value())
 
-        self._long_df, self._wide_df = msci.matrix_long_wide(
-            self.dataset, unit=unit, top_n_elements=top_n, min_inventory=min_inv,
-            value_mode=mode, tank_subset=tank_subset,
-        )
-        self.long_view.set_dataframe(self._long_df)
-        self.wide_view.set_dataframe(self._wide_df)
-        ph.plot_heatmap(self.plot, self._wide_df, unit, mode, f"Tank x element heatmap ({unit}, {mode})")
-        n_tanks = len(self._wide_df) if not self._wide_df.empty else 0
+        try:
+            if self.attribution_combo.currentText() == mq.APPORTIONED:
+                result = mq.engine_matrix(
+                    self.dataset, basis=unit, top_n_elements=top_n,
+                    scope=scope, tank_subset=tank_subset,
+                )
+                if self.min_inv_spin.value() > 0:
+                    result.warnings.append(
+                        "min inventory is a row-level filter of the as-reported "
+                        "attribution and is not applied to apportioned values."
+                    )
+            else:
+                result = mq.legacy_matrix(
+                    self.dataset, unit=unit, top_n_elements=top_n,
+                    min_inventory=self.min_inv_spin.value(),
+                    scope=scope, tank_subset=tank_subset,
+                )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Heatmaps", str(exc))
+            return
+
+        self._result = result
+        self._result_scope = self.scope.summary()
+        self.long_view.set_dataframe(result.long_df)
+        self.wide_view.set_dataframe(result.wide_df)
+        self.notes_view.set_dataframe(pd.DataFrame(
+            [{"kind": "warning", "text": w} for w in result.warnings]
+            + [{"kind": "disclosure", "text": d} for d in result.disclosures]
+        ))
+        if result.warnings:
+            self.warnings_label.setText("⚠ " + "  •  ".join(result.warnings))
+            self.warnings_label.setVisible(True)
+        else:
+            self.warnings_label.setVisible(False)
+
+        self._update_plot()
+        scope_note = f", scope: {self._result_scope}" if self._result_scope else ""
         self.app_window.statusBar().showMessage(
-            f"Heatmap built: unit={unit}, top_elements={top_n}, tanks={n_tanks}."
+            f"Heatmap built: {unit}, {len(result.elements)} elements, "
+            f"{len(result.wide_df)} tanks{scope_note}."
         )
+
+    def _update_plot(self) -> None:
+        result = self._result
+        if result.long_df.empty:
+            return
+        log_x, normalize = MODES[self.mode_combo.currentText()]
+        attribution = self.attribution_combo.currentText()
+        subtitle_parts = [attribution]
+        if self._result_scope:
+            subtitle_parts.append(f"Scope: {self._result_scope}")
+        spec = PlotSpec(
+            mark="heatmap", x=result.value_column, y="WasteSiteId", hue="Element",
+            title=f"Tank × element — {self.unit_combo.currentText()}",
+            subtitle=" · ".join(subtitle_parts),
+            log_x=log_x, normalize=normalize,
+        )
+        render_plot(self.plot, result.long_df, spec)
 
     def _export_inputs(self) -> None:
-        if self._long_df.empty and self._wide_df.empty:
+        if self._result.wide_df.empty and self._result.long_df.empty:
             QMessageBox.information(self, "Export", "Build a heatmap first.")
             return
         params = pd.DataFrame([
-            {"parameter": "unit", "value": self.unit_combo.currentText()},
+            {"parameter": "basis", "value": self.unit_combo.currentText()},
             {"parameter": "mode", "value": self.mode_combo.currentText()},
+            {"parameter": "attribution", "value": self.attribution_combo.currentText()},
             {"parameter": "top_n_elements", "value": self.top_n_spin.value()},
             {"parameter": "min_inventory", "value": self.min_inv_spin.value()},
             {"parameter": "max_tanks", "value": self.max_tanks_spin.value()},
         ])
-        tables = {"heatmap_long": self._long_df, "heatmap_wide": self._wide_df, "heatmap_parameters": params}
-        out_dir = export_utils.export_named_tables(self.dataset, f"heatmap_{self.unit_combo.currentText()}", tables)
+        notes = pd.DataFrame(
+            [{"kind": "warning", "text": w} for w in self._result.warnings]
+            + [{"kind": "disclosure", "text": d} for d in self._result.disclosures]
+        )
+        tables = {
+            "heatmap_long": self._result.long_df,
+            "heatmap_wide": self._result.wide_df,
+            "heatmap_parameters": params,
+            "heatmap_notes": notes,
+        }
+        out_dir = export_utils.export_named_tables(
+            self.dataset, f"heatmap_{self.unit_combo.currentText()}", tables,
+            context={
+                "attribution": self.attribution_combo.currentText(),
+                "global_scope": self._result_scope or "(none)",
+            },
+        )
         try:
             self.plot.figure.savefig(out_dir / "heatmap.png", bbox_inches="tight", dpi=200)
         except Exception:

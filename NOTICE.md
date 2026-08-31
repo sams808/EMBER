@@ -246,20 +246,44 @@ composition plot comparing the selected tanks side by side.
 
 ## 9. Heatmaps
 
-Tank × element inventory matrices, with three value modes:
+Tank × element inventory matrices, built by the query engine (§19) and
+drawn through the plot grammar, so the global scope bar applies here and
+every exclusion is disclosed.
 
-- **raw** — inventory value as-is.
-- **log10_inventory** — log10 of the inventory (zeros become undefined/blank
-  cells, not zero — a log10 of zero doesn't exist).
-- **log10_plus1** — log10(inventory + 1), which keeps zero-inventory cells
-  visible as a real (near-minimum) value instead of blank, useful when
-  "this element is genuinely absent from this tank" is itself information
-  you want to see on the map.
+**Attribution** — the control that decides what "how much X" means:
 
-Restricted to the top-N elements by total inventory (adjustable) to stay
-readable; the figure's own size scales with how many tanks/elements are
-shown, capped at whatever's actually visible in the panel so nothing gets
-silently clipped off-screen.
+- **Apportioned (stoichiometric)** *(default)* — an element receives its
+  mass fraction of every species reporting it, so sulfate contributes
+  32.06/96.06 of its mass to S and the rest to O.
+- **As reported (primary element)** — each analyte's full mass is booked
+  to its first parsed element, the behavior of earlier Ember versions.
+  Kept so an older figure can be reproduced exactly.
+
+The two disagree by known factors. On the bundled dataset, switching to
+apportioned attribution multiplies each element's total by:
+
+| Element | Factor | Why |
+|---|---|---|
+| O | ×15.6 | oxygen is never a *first* element, so it was previously almost invisible; it becomes the largest element by mass |
+| N | ×0.24 | nitrate's full mass used to count as nitrogen |
+| S | ×0.33 | = 32.06/96.06, sulfate's sulfur fraction |
+| P | ×0.33 | phosphate |
+| C | ×0.29 | carbonate and TOC |
+| Na, Al, Fe, Cr, … | ×1.00 | reported as bare elements — unchanged |
+
+Three value modes: **inventory** (as-is), **log10_inventory** (zeros
+become blank cells — log10 of zero doesn't exist), and **fraction** (each
+tank's row divided by its own total, i.e. composition rather than
+amount). The colorbar states which transform is active.
+
+Restricted to the top-N elements by total (adjustable) to stay readable,
+with any omission stated on the figure; the figure's own size scales with
+how many tanks/elements are shown, capped at whatever's actually visible
+in the panel so nothing gets silently clipped off-screen.
+
+*"min inventory" is a row-level floor applied before summing. It belongs
+to the as-reported path and is not applied to apportioned values; picking
+both raises a warning rather than quietly ignoring the setting.*
 
 ---
 

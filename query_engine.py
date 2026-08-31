@@ -149,6 +149,14 @@ class QueryResult:
     basis: str = "g"
 
 
+def apply_scope(df: pl.DataFrame, scope: Optional[Dict[str, Sequence[str]]]) -> pl.DataFrame:
+    """Public: apply a scope dict to any composition frame. Views that do
+    NOT go through run_query (legacy science paths kept for comparison)
+    must filter through this same function, or "global scope" would mean
+    different things in different workspaces."""
+    return _apply_scope(df, scope)
+
+
 def _apply_scope(df: pl.DataFrame, scope: Optional[Dict[str, Sequence[str]]]) -> pl.DataFrame:
     if not scope:
         return df

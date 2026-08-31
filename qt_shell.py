@@ -59,7 +59,7 @@ NAV_DESCRIPTIONS: Dict[str, str] = {
     NAV_EXPLORER: "Search one element or analyte: which tanks have it, what else tends to be there, typical composition.",
     NAV_TANK_ATTRS: "Browse tank engineering metadata -- type, capacity, integrity, status -- joined from the attributes file.",
     NAV_TANK_EXPLORER: "Compare full composition across several chosen tanks side by side.",
-    NAV_HEATMAPS: "Tank x element inventory as a color matrix -- see abundance patterns across the whole dataset at once.",
+    NAV_HEATMAPS: "Tank x element inventory as a color matrix, stoichiometrically apportioned -- abundance patterns across the whole dataset at once.",
     NAV_CORRELATIONS: "Which elements tend to occur together, statistically -- quick scan, kg-only association workbench, PCA/clustering.",
     NAV_VITRIFICATION: "Screen tanks for glass-formulation suitability -- oxide chemistry, candidate search, blend partners.",
     NAV_FIGURE_COMPOSER: "Combine plots captured from any workspace into one labeled, publication-ready multi-panel figure.",
@@ -164,7 +164,7 @@ class EmberMainWindow(QMainWindow):
         self.tank_explorer_page = TankExplorerPage(self)
         self.stack.addWidget(self.tank_explorer_page)
         pump()
-        self.heatmaps_page = HeatmapPage(self)
+        self.heatmaps_page = HeatmapPage(self, scope=self.global_scope)
         self.stack.addWidget(self.heatmaps_page)
         pump()
         self.correlations_page = CorrelationsPage(self)
