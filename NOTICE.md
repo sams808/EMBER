@@ -216,8 +216,21 @@ on this page are audits of the data as reported, and are unaffected.)
 
 ## 6. Element Explorer
 
-The main search workspace, with five distinct search modes so you can find
-what you're looking for whichever way you think of it:
+The main search workspace. Its three **Target** views (by tank, phase and
+type) and its raw rows come from the query engine (§19), so this page
+agrees with Query, Heatmaps and Overview: an element receives its
+stoichiometric share of every species reporting it. Previously a search
+for `S` booked the full mass of every sulfate row as sulfur — and a
+search for `O` booked that same sulfate mass again as oxygen.
+
+The **Co-elements**, **Co-analytes** and **Composition** tabs still count
+reported rows as they are, each analyte's full mass under its first
+parsed element. That is a different and legitimate question — "what
+appears alongside what" rather than "how much of X is there" — and the
+Notes tab says which tab answers which.
+
+Five search modes, so you can find what you're looking for whichever way
+you think of it:
 
 - **Element symbol** — exact match on the parsed element (e.g. `Cs`).
 - **Exact analyte** — exact match on the raw, unparsed `Analyte` string
@@ -996,6 +1009,10 @@ retyped: custom baskets, saved questions (subject × basis × grouping ×
 scope × mark), tank lists, and the active scope. This is possible only
 because the query and plot layers are declarative — a saved question is
 plain data, not a closure.
+
+Save and open them from **File → Save project…** / **Open project…**
+(Ctrl+S / Ctrl+O). Every Query export also writes a `provenance.csv` and
+a `methods.txt` beside the data, both listed in the manifest.
 
 Project files are JSON with a version number. Loading is deliberately
 tolerant of keys it does not recognise, so a project written by a newer
