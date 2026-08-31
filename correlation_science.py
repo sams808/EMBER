@@ -19,10 +19,12 @@ import polars as pl
 from data_model import HanfordDataset
 from elements import normalize_element_symbol
 from matrix_science import element_inventory_matrix
+from query_engine import drop_pair_restatements
 
 
 def element_totals_by_unit(dataset: HanfordDataset, unit: str = "kg") -> Dict[str, float]:
     df = dataset.require_df().filter((pl.col("Units") == unit) & pl.col("Element").is_not_null())
+    df, _restatement_note = drop_pair_restatements(df)
     if df.is_empty():
         return {}
     pdf = df.group_by("Element").agg(pl.col("Inventory").sum().alias("Total")).to_pandas()

@@ -26,6 +26,7 @@ import polars as pl
 from data_model import HanfordDataset
 from elements import normalize_element_symbol
 from matrix_science import element_inventory_matrix
+from query_engine import drop_pair_restatements
 
 VITRIFICATION_GROUPS: Dict[str, List[str]] = {
     "glass_former_or_intermediate": ["B", "Si", "P", "Al", "Zr", "Ti"],
@@ -148,7 +149,11 @@ def tank_category_summary(
     if df.is_empty():
         return pd.DataFrame()
     kg = df.filter(pl.col("Units") == "kg")
-    ci = df.filter(pl.col("Units") == "Ci")
+    # The screening map plots Total_Ci_inventory on a log axis and the
+    # candidate ranking scores on the per-element Ci fractions, so a
+    # combined pair counted on top of its own members moved both. Same
+    # helper the Query workspace uses (review finding).
+    ci, _restatement_note = drop_pair_restatements(df.filter(pl.col("Units") == "Ci"))
 
     def group_sum(frame: pl.DataFrame, elements: Sequence[str], col_name: str) -> pl.DataFrame:
         # Both call sites below are already guarded by "if not kg/ci.is_empty()",

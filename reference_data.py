@@ -169,6 +169,20 @@ COMBINED_PAIR_MEMBERS: Dict[str, Tuple[str, ...]] = {
     "144Ce/Pr": ("144Ce", "144Pr"),
 }
 
+# A reported TOTAL that already contains the itemisation the BBI reports
+# beside it, mapped to the element it describes and the members it
+# subsumes. Distinct from COMBINED_PAIR_MEMBERS in both direction and
+# keep-rule: a pair EQUALS its members, so the itemisation is kept and
+# the pair set aside; a total is a proper SUPERSET (TOC also holds
+# organics the BBI never itemises -- the itemised anions are a median
+# 18% of it), so the TOTAL is kept and the members set aside.
+#
+# TIC as CO3 is deliberately absent: it is INORGANIC carbon, which total
+# organic carbon does not contain, so the two are correctly additive.
+SPECIES_TOTAL_MEMBERS: Dict[str, Tuple[str, Tuple[str, ...]]] = {
+    "TOC": ("C", ("Oxalate", "Formate", "Acetate", "Glycolate", "Tributyl phosphate")),
+}
+
 # Mass number for the specific-activity molar-mass approximation, parsed
 # by the SAME parser that builds the dataset's Isotope column (review
 # finding: a second hand-rolled label parse here could silently drift

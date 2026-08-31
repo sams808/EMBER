@@ -151,11 +151,16 @@ class TestNboOverT:
 
     def test_soda_silicate_hand_computed(self):
         # 1 mol SiO2 + 1 mol Na2O: T = 1*1 (Si only, Na2O is a modifier);
-        # O_total = 1*2 (SiO2) + 1*1 (Na2O) = 3; NBO/T = (3-2)/1 = 1.
+        # O_total = 1*2 (SiO2) + 1*1 (Na2O) = 3;
+        # NBO/T = (2*3 - 4*1)/1 = 2 -- sodium metasilicate is a chain
+        # silicate with two non-bridging oxygens per Si, which is the
+        # independent check on the formula. This test previously pinned
+        # 1.0, the halved value, and so confirmed the defect instead of
+        # catching it (review finding).
         out = ox.nbo_over_t({"SiO2": 1.0, "Na2O": 1.0})
         assert out["T"] == pytest.approx(1.0)
         assert out["O_total"] == pytest.approx(3.0)
-        assert out["NBO_T"] == pytest.approx(1.0)
+        assert out["NBO_T"] == pytest.approx(2.0)
 
     def test_other_role_oxide_excluded_even_if_large(self):
         base = ox.nbo_over_t({"SiO2": 1.0, "Na2O": 1.0})

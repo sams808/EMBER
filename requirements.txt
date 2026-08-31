@@ -1,4 +1,8 @@
-polars
+# polars >= 1.24 renamed the join keyword `join_nulls` to `nulls_equal`.
+# The restatement and layer-denominator joins in query_engine.py depend on
+# it: without null-key matching, layers whose WasteType is absent silently
+# miss their own suppression markers and their own denominators.
+polars>=1.24
 pandas
 numpy
 matplotlib

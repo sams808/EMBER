@@ -29,6 +29,7 @@ from qt_help import make_help_button
 from qt_widgets import CollapsibleSection, DataFrameTableView
 
 SOURCES_NOTE = (
+    oxsci.oxide_basis_note() + " "
     "Screening tool, not an official glass model. Λ: Rodriguez & McCloy, PNNL-20184 (2011) Table B.1. "
     "ML predictions: GlassNet -- Cassar, Ceram. Int. 49 (2023) 36013, trained on SciGlass. "
     "NBO/T is a simplified approximation (does not model Al/B charge-balance by alkali) -- "
@@ -118,8 +119,12 @@ class OxideChemistryTab(QWidget):
         self.envelope_table.setMaximumHeight(140)
         adv.addWidget(self.envelope_table)
 
-        recompute_btn = QPushButton("Recompute basicity / NBO-T / envelope")
-        recompute_btn.clicked.connect(self.recompute_summary)
+        recompute_btn = QPushButton("Apply assumptions and recompute")
+        recompute_btn.setToolTip(
+            "Re-convert the composition using the Element → assumed oxide table above, "
+            "then recompute optical basicity, NBO/T and the envelope check."
+        )
+        recompute_btn.clicked.connect(self.apply_assumptions)
         adv.addWidget(recompute_btn)
 
         self.gn_btn = QPushButton("GlassNet predict (selected sample)")
@@ -201,19 +206,29 @@ class OxideChemistryTab(QWidget):
         return [str(e) for e in df.get_column("Element").drop_nulls().unique().to_list()]
 
     def _populate_oxide_map_table(self, elements: List[str]) -> None:
+        """Rebuild the rows for `elements`, KEEPING whatever the user has
+        already chosen for an element that survives the rebuild.
+
+        This table is the tab's one editable assumption, and it used to be
+        wiped and reseeded from the defaults immediately before
+        _rebuild_and_show read it, so no edit could ever reach a
+        computation (review finding)."""
+        keep = self._current_oxide_map()
         self.oxide_map_table.setRowCount(0)
         for element in sorted(elements):
             row = self.oxide_map_table.rowCount()
             self.oxide_map_table.insertRow(row)
             self.oxide_map_table.setItem(row, 0, QTableWidgetItem(element))
             alternatives = oxsci.ALTERNATIVE_OXIDES.get(element)
+            chosen = keep.get(element) if element in keep else oxsci.DEFAULT_OXIDE_MAP.get(element)
             if alternatives:
                 combo = QComboBox()
                 combo.addItems(alternatives)
+                if chosen in alternatives:
+                    combo.setCurrentText(chosen)
                 self.oxide_map_table.setCellWidget(row, 1, combo)
             else:
-                default = oxsci.DEFAULT_OXIDE_MAP.get(element)
-                self.oxide_map_table.setItem(row, 1, QTableWidgetItem(default or ""))
+                self.oxide_map_table.setItem(row, 1, QTableWidgetItem(chosen or ""))
 
     def _current_oxide_map(self) -> Dict[str, Optional[str]]:
         out: Dict[str, Optional[str]] = {}
@@ -377,6 +392,19 @@ class OxideChemistryTab(QWidget):
             return
         self._table_views["Oxide composition"].set_dataframe(table)
         self.recompute_summary()
+
+    def apply_assumptions(self) -> None:
+        """Re-convert with the user's current Element -> oxide choices,
+        then recompute the derived quantities.
+
+        Reconversion has to happen here: the only other caller of
+        _rebuild_and_show is build_composition, which reseeds the map
+        first, so before this the edited table could not reach any
+        computation at all (review finding)."""
+        if not self.oxide_tables:
+            self.build_composition()
+            return
+        self._rebuild_and_show()
 
     def recompute_summary(self) -> None:
         table = self.oxide_tables.get(self.sample_combo.currentText())

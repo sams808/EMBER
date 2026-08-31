@@ -14,6 +14,7 @@ import pandas as pd
 import polars as pl
 
 from data_model import HanfordDataset, list_join_expr
+from query_engine import drop_pair_restatements
 
 _ATTRIBUTE_TABLE_COLUMNS = [
     "WasteSiteId", "TankFarm", "TankSystem", "TankType", "Capacity", "CapacityUnits",
@@ -87,6 +88,10 @@ def tank_profile(
     df = dataset.require_df().filter(pl.col("WasteSiteId").is_in(list(tank_ids)))
     df = dataset.filter_by_units(df, unit_filter)
     df = df.filter((pl.col("Inventory") > 0) & pl.col("Element").is_not_null())
+    # Same rule the Query workspace applies, from the same helper: without
+    # it this page added 239/240Pu to its own members and disagreed with
+    # the engine about 121 (tank, element) cells (review finding).
+    df, _restatement_note = drop_pair_restatements(df)
     if df.is_empty():
         return pd.DataFrame()
     out = (
@@ -104,9 +109,14 @@ def tank_profile(
     out = out.join(totals, on=["Units", "WasteSiteId"], how="left").with_columns(
         (pl.col("Inventory_sum") / pl.col("Tank_total_same_unit")).alias("Fraction_of_tank_unit_inventory")
     )
+    # Top-N is per tank, not a global row budget. A positional head() over
+    # a tank-ordered sort let the alphabetically-first tanks spend the
+    # whole budget: selecting the 16 C-farm tanks published 12, and a
+    # 7-tank selection dropped the single largest tank in the dataset --
+    # silently, in the table, the chart and the export alike.
     return (
         out.sort(["Units", "WasteSiteId", "Inventory_sum"], descending=[False, False, True])
-        .head(top_n * max(len(tank_ids), 1))
+        .filter(pl.int_range(pl.len()).over(["Units", "WasteSiteId"]) < top_n)
         .to_pandas()
     )
 

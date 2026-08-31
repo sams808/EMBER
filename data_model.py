@@ -220,7 +220,16 @@ class HanfordDataset:
         separator: Optional[str] = None
         attrs_rows = 0
 
-        if use_cache and parquet_path.exists() and not refresh_cache:
+        # A cache older than its source is stale, not a cache. Without the
+        # mtime test, re-publishing Hanford.csv in place left the default
+        # startup path serving the OLD numbers while provenance hashed and
+        # sized the NEW file -- a record whose row count, byte count and
+        # digest described bytes the app had never read.
+        cache_is_fresh = (
+            parquet_path.exists()
+            and parquet_path.stat().st_mtime >= path.stat().st_mtime
+        )
+        if use_cache and cache_is_fresh and not refresh_cache:
             self.log(f"Loading cached parquet: {parquet_path.name}")
             df = pl.read_parquet(parquet_path)
             cache_used = True

@@ -10,7 +10,7 @@ QSettings (settings_prefix keeps the three tabs' weights independent).
 """
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 from PySide6.QtCore import Signal
@@ -57,6 +57,38 @@ def _reset_weight_spins(spins: Dict[str, QDoubleSpinBox], defaults: Dict[str, fl
 
 def _current_weights(spins: Dict[str, QDoubleSpinBox]) -> Dict[str, float]:
     return {key: spin.value() for key, spin in spins.items()}
+
+
+_SCORE_TERMS = (
+    ("glass_former_weight", "glass_former"),
+    ("modifier_weight", "modifier"),
+    ("problem_weight", "problem"),
+    ("volatile_weight", "volatile"),
+    ("redox_weight", "redox"),
+)
+
+
+def _format_score_formula(weights: Dict[str, float]) -> str:
+    """The score written with each term's own sign.
+
+    The readout used to hardcode a minus in front of abs() for the
+    problem, volatile and redox terms, while the scoring code applies the
+    raw signed weight. The defaults are negative so it read correctly at
+    the defaults -- but the spin boxes accept -1000..1000, and +45 and
+    -45 produced the byte-identical string. The one human-readable
+    statement of the formula could not distinguish a penalty from a
+    bonus, and _disclose_custom_weights puts it on screen precisely when
+    a weight has been changed (review finding).
+    """
+    parts: List[str] = []
+    for key, name in _SCORE_TERMS:
+        value = float(weights.get(key, 0.0))
+        sign = "-" if value < 0 else "+"
+        parts.append(f"{sign} {abs(value):.3g}*{name}")
+    body = " ".join(parts)
+    if body.startswith("+ "):
+        body = body[2:]
+    return f"score = {body} (clipped to [-100, 100])"
 
 
 def _disclose_custom_weights(section, spins: Dict[str, QDoubleSpinBox], defaults: Dict[str, float]) -> None:
@@ -170,12 +202,7 @@ class ScreeningTab(QWidget):
         self._table_views["Waste notes"].set_dataframe(vsci.waste_class_notes())
 
     def _update_formula_label(self) -> None:
-        w = _current_weights(self.weight_spins)
-        self.formula_label.setText(
-            f"score = {w['glass_former_weight']:.3g}*glass_former + {w['modifier_weight']:.3g}*modifier "
-            f"- {abs(w['problem_weight']):.3g}*problem - {abs(w['volatile_weight']):.3g}*volatile "
-            f"- {abs(w['redox_weight']):.3g}*redox (clipped to [-100, 100])"
-        )
+        self.formula_label.setText(_format_score_formula(_current_weights(self.weight_spins)))
 
     # ------------------------------------------------------------------
     def on_dataset_changed(self, dataset: HanfordDataset) -> None:

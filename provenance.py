@@ -56,6 +56,10 @@ class Provenance:
     dataset_columns: Optional[int] = None
     attributes_path: str = ""
     attributes_rows: Optional[int] = None
+    # Whether the numbers came from the parquet cache rather than the CSV
+    # named above. The hash and byte count describe the CSV, so a record
+    # that does not say this cannot be checked against what was computed.
+    dataset_from_cache: Optional[bool] = None
 
     question: Dict[str, object] = field(default_factory=dict)
     plot_spec: Dict[str, object] = field(default_factory=dict)
@@ -96,6 +100,7 @@ def dataset_fingerprint(dataset: HanfordDataset) -> Dict[str, object]:
         "dataset_path": "", "dataset_sha256_head": "", "dataset_bytes": None,
         "dataset_rows": None, "dataset_columns": None,
         "attributes_path": "", "attributes_rows": None,
+        "dataset_from_cache": None,
     }
     report = getattr(dataset, "report", None)
     if report is not None:
@@ -105,6 +110,7 @@ def dataset_fingerprint(dataset: HanfordDataset) -> Dict[str, object]:
         if report.attributes_path is not None:
             out["attributes_path"] = str(report.attributes_path)
         out["attributes_rows"] = report.attributes_rows
+        out["dataset_from_cache"] = bool(getattr(report, "cache_used", False))
     elif getattr(dataset, "path", None) is not None:
         out["dataset_path"] = str(dataset.path)
     if out["dataset_rows"] is None and dataset.is_loaded():

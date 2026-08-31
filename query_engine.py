@@ -48,6 +48,7 @@ from data_model import HanfordDataset
 from elements import normalize_element_symbol, parse_isotope, primary_element_from_analyte
 from reference_data import (
     COMBINED_PAIR_MEMBERS,
+    SPECIES_TOTAL_MEMBERS,
     NUCLIDE_HALF_LIFE_YEARS,
     SPECIES_ELEMENT_MASS_FRACTIONS,
     SPECIES_FORMULAS,
@@ -148,6 +149,13 @@ class QueryResult:
     disclosures: List[str] = field(default_factory=list)
     value_column: str = ""
     basis: str = "g"
+    # How much the restatement rules set aside, in the basis's own unit
+    # (kg, g or Ci). A consumer reconciling this table against the raw
+    # reported total must subtract it, or it will attribute deliberately
+    # suppressed material to some other cause -- which is exactly how the
+    # matrix warning came to blame the parser for 430 t of carbon that
+    # the engine had correctly declined to count twice.
+    restated_value: float = 0.0
 
 
 def apply_scope(df: pl.DataFrame, scope: Optional[Dict[str, Sequence[str]]]) -> pl.DataFrame:
@@ -283,8 +291,8 @@ def _suppress_restatements(contrib: pl.DataFrame) -> pl.DataFrame:
     """Flag rows that restate material another row already accounts for.
 
     The BBI describes the same inventory more than once, and adding any
-    of those descriptions to itself inflates a published number. Two
-    distinct cases, both resolved PER LAYER so a layer reporting only one
+    of those descriptions to itself inflates a published number. Three
+    distinct cases, all resolved PER LAYER so a layer reporting only one
     form keeps it:
 
     MASS. A mass reported for an element includes its radionuclides: the
@@ -305,6 +313,14 @@ def _suppress_restatements(contrib: pl.DataFrame) -> pl.DataFrame:
     a pair AND its members, exactly one representation is kept -- the
     itemised members when they are all present (more informative), the
     pair otherwise (dropping it would lose the member that is missing).
+
+    MASS TOTALS. A reported total already contains the itemisation beside
+    it: TOC is total organic carbon and holds the oxalate, formate,
+    acetate and glycolate the BBI reports separately. Summing them
+    counted 429.8 t of carbon twice (13.6% of all carbon, 35.8% of the
+    organic fraction). Here the keep-rule inverts -- the total is a
+    proper superset, so the TOTAL is kept and the members set aside, for
+    the element the total describes only.
     """
     if contrib.is_empty() or "SubjectElement" not in contrib.columns:
         return contrib
@@ -324,7 +340,11 @@ def _suppress_restatements(contrib: pl.DataFrame) -> pl.DataFrame:
         .with_columns(pl.lit(True).alias("_mass_here"))
     )
     out = (
-        contrib.join(mass_here, on=key, how="left")
+        # nulls_equal: WasteType is optional and the shipped CSV writes it
+        # as "NA" on 869 rows, so 9 layers carry a null key. Without this a
+        # layer does not match its own marker and suppression never fires
+        # there -- uranium came back at 2.0004x its reported mass.
+        contrib.join(mass_here, on=key, how="left", nulls_equal=True)
         .with_columns(
             (~((pl.col("Units") == "Ci") & pl.col("_mass_here").fill_null(False)))
             .alias("MassCounts")
@@ -332,14 +352,83 @@ def _suppress_restatements(contrib: pl.DataFrame) -> pl.DataFrame:
         .drop("_mass_here")
     )
 
+    # ---- mass: a reported TOTAL already contains its itemisation ----
+    # The third restatement shape, and the one where the keep-rule
+    # inverts. A combined pair EQUALS its members, so the itemisation is
+    # the better representation. A total is a proper SUPERSET -- TOC also
+    # holds organics the BBI never itemises -- so the TOTAL is kept and
+    # the members are set aside. Scoped to the element the total
+    # describes: tributyl phosphate stops counting toward carbon, but its
+    # phosphorus is still booked in full.
+    subjects = set(out.get_column("SubjectElement").unique().to_list())
+    for total, (element, members) in SPECIES_TOTAL_MEMBERS.items():
+        if element not in subjects:
+            continue
+        total_here = (
+            out.filter(
+                (pl.col("Analyte") == total)
+                & (pl.col("Units") != "Ci")
+                & pl.col("Mass_g").is_not_null()
+                & (pl.col("Mass_g") > 0)
+            )
+            .select(layer).unique()
+            .with_columns(pl.lit(True).alias("_total_here"))
+        )
+        if total_here.is_empty():
+            continue
+        out = (
+            out.join(total_here, on=layer, how="left", nulls_equal=True)
+            .with_columns(
+                (
+                    pl.col("MassCounts")
+                    & ~(
+                        pl.col("_total_here").fill_null(False)
+                        & pl.col("Analyte").is_in(list(members))
+                        & (pl.col("SubjectElement") == element)
+                    )
+                ).alias("MassCounts")
+            )
+            .drop("_total_here")
+        )
+
     # ---- activity: a combined pair restates its members ----
-    # Decided PER LAYER: one layer may itemise where the next only gives
-    # the pair, so a dataset-wide verdict would drop real activity.
+    keys = pair_restatement_keys(out)
+    if keys.is_empty():
+        return out
+    flags = keys.with_columns(pl.lit(True).alias("_restates"))
+    return (
+        out.join(flags, on=list(keys.columns), how="left", nulls_equal=True)
+        .with_columns((~pl.col("_restates").fill_null(False)).alias("ActivityCounts"))
+        .drop("_restates")
+    )
+
+
+def pair_restatement_keys(df: pl.DataFrame) -> pl.DataFrame:
+    """Public: the (layer, Analyte) rows whose activity another row in the
+    SAME layer already accounts for.
+
+    Decided PER LAYER: one layer may itemise where the next gives only
+    the pair, so a dataset-wide verdict would drop real activity. Where a
+    layer holds both, exactly one representation survives -- the itemised
+    members when all are present (more informative), the pair otherwise
+    (dropping it would lose the member that is missing).
+
+    Returns an empty frame carrying the right schema when nothing
+    restates, so callers can join or anti-join unconditionally.
+    """
+    layer = [c for c in _LAYER_KEYS if c in df.columns]
+    if not layer or "Analyte" not in df.columns:
+        return pl.DataFrame(schema={"Analyte": pl.Utf8})
+    # Schema pinned, not inferred: a layer key that is null on every
+    # redundant row infers dtype Null, and the join then raises
+    # SchemaError -- not a ValueError, so the workspaces' guards miss it.
+    schema = {k: df.schema[k] for k in layer + ["Analyte"]}
+    rows = df.filter(pl.col("Units") == "Ci") if "Units" in df.columns else df
     labels = {a for pair, members in COMBINED_PAIR_MEMBERS.items()
               for a in (pair,) + members}
-    relevant = out.filter(pl.col("Analyte").is_in(sorted(labels)))
+    relevant = rows.filter(pl.col("Analyte").is_in(sorted(labels)))
     if relevant.is_empty():
-        return out
+        return pl.DataFrame(schema=schema)
 
     redundant: List[Dict[str, object]] = []
     for row in relevant.select(layer + ["Analyte"]).unique().group_by(layer).agg(
@@ -351,17 +440,69 @@ def _suppress_restatements(contrib: pl.DataFrame) -> pl.DataFrame:
             itemised = [m for m in members if m in here]
             if not itemised:
                 continue                     # only the pair: it is the representation
-            drop = [pair] if len(itemised) == len(members) else itemised
-            for analyte in drop:
-                redundant.append({**{k: row[k] for k in layer}, "Analyte": analyte,
-                                  "_restates": True})
+            for analyte in ([pair] if len(itemised) == len(members) else itemised):
+                redundant.append({**{k: row[k] for k in layer}, "Analyte": analyte})
     if not redundant:
-        return out
-    return (
-        out.join(pl.DataFrame(redundant), on=layer + ["Analyte"], how="left")
-        .with_columns((~pl.col("_restates").fill_null(False)).alias("ActivityCounts"))
-        .drop("_restates")
+        return pl.DataFrame(schema=schema)
+    return pl.DataFrame(redundant, schema=schema)
+
+
+def drop_pair_restatements(df: pl.DataFrame) -> Tuple[pl.DataFrame, Optional[str]]:
+    """Public: `df` without the activity rows that restate another row in
+    the same layer, plus a sentence naming what was set aside.
+
+    Every path that sums Ci rows must go through this. Four science
+    modules re-implemented the raw group-and-sum instead, so Tank
+    Explorer, Heatmaps, Correlations and Vitrification each published a
+    combined pair on top of its own members and contradicted the Query
+    workspace about the same tank, element and unit (review finding).
+    """
+    keys = pair_restatement_keys(df)
+    if keys.is_empty():
+        return df, None
+    out = df.join(keys, on=list(keys.columns), how="anti", nulls_equal=True)
+    labels = sorted(set(keys.get_column("Analyte").to_list()))
+    note = (
+        f"{df.height - out.height} Ci row(s) set aside as restatements "
+        f"({', '.join(labels)}): a combined-pair label is the sum of its members, "
+        f"and this dataset reports both — counting them together would add the "
+        f"same activity twice."
     )
+    return out, note
+
+
+def _mass_restatement_warnings(contrib: pl.DataFrame) -> List[str]:
+    """Name the rows set aside on a mass basis, and why. The two shapes
+    have opposite causes -- one is an activity row a reported mass
+    already covers, the other a mass row a reported TOTAL already
+    contains -- so they get separate sentences rather than one that is
+    only half true of each."""
+    out: List[str] = []
+    restated = contrib.filter(~pl.col("MassCounts"))
+    if restated.is_empty():
+        return out
+    bridged = restated.filter(pl.col("Units") == "Ci")
+    itemised = restated.filter(pl.col("Units") != "Ci")
+    if bridged.height:
+        labels = sorted(set(bridged.get_column("Analyte").to_list()))
+        shown = ", ".join(labels[:6]) + (" …" if len(labels) > 6 else "")
+        out.append(
+            f"{bridged.height} Ci row(s) set aside on the mass basis ({shown}): a reported "
+            f"elemental mass already includes its radionuclides, so adding the bridged grams "
+            f"would count the same material twice."
+        )
+    if itemised.height:
+        labels = sorted(set(itemised.get_column("Analyte").to_list()))
+        totals = sorted({
+            total for total, (_element, members) in SPECIES_TOTAL_MEMBERS.items()
+            if any(label in members for label in labels)
+        })
+        out.append(
+            f"{itemised.height} kg row(s) set aside on the mass basis "
+            f"({', '.join(labels)}): {' and '.join(totals)} already contains them, and the "
+            f"total is the more complete figure — it also holds species the BBI never itemises."
+        )
+    return out
 
 
 def _analyte_contributions(df: pl.DataFrame, analyte: str) -> pl.DataFrame:
@@ -436,7 +577,22 @@ def _member_disclosure(name: str, contrib: pl.DataFrame) -> str:
             else:
                 excluded.append(label)
         elif kind.startswith("analyte:"):
-            parts.append(f"analyte rows ({kind.split(':', 1)[1]})")
+            unit = kind.split(":", 1)[1]
+            if unit == "Ci":
+                # Name the bridge here too. The ELEMENT path over these same
+                # rows says "Ci→g bridged, ICRP-107" and the analyte path
+                # did not, so a template promising "129I (bridged)" produced
+                # notes that never mentioned ICRP at all (review finding).
+                # NOT routed through the "Ci:" branch above: that also
+                # asserts mass is a lower bound, which is false when the
+                # subject IS the nuclide.
+                label = f"analyte rows (Ci→g bridged, ICRP-107)"
+                if nuclide_grams_per_ci(name) is None:
+                    label = ("analyte rows (Ci) — no single ICRP-107 specific activity, "
+                             "so this subject carries no mass")
+                parts.append(label)
+            else:
+                parts.append(f"analyte rows ({unit})")
             has_direct_mass = True
     if bridged:
         parts.append(f"{'/'.join(bridged)} (Ci→g bridged, ICRP-107)")
@@ -588,7 +744,10 @@ def run_query(
                 f"both — counting them together would add the same activity twice."
             )
     elif basis == "kg":
-        included = contrib.filter(pl.col("Units") == "kg")
+        # MassCounts gates this basis too: a kg TOTAL restating a kg
+        # itemisation (TOC over the organic anions) is a kg-vs-kg overlap
+        # that the unit filter alone cannot see.
+        included = contrib.filter((pl.col("Units") == "kg") & pl.col("MassCounts"))
         value_expr = pl.col("Mass_g") / 1000.0
         value_col = "Total_kg"
         n_ci_dropped = contrib.filter(pl.col("Units") == "Ci").height
@@ -596,19 +755,12 @@ def run_query(
             warnings.append(
                 f"{n_ci_dropped} Ci-basis row(s) excluded under the kg basis; use basis 'g' to bridge them."
             )
+        warnings.extend(_mass_restatement_warnings(contrib.filter(pl.col("Units") == "kg")))
     else:  # g, wt%, g/L -- mass-based
         included = contrib.filter(pl.col("Mass_g").is_not_null() & pl.col("MassCounts"))
         value_expr = pl.col("Mass_g")
         value_col = {"g": "Total_g", "wt%": "wt_pct", "g/L": "g_per_L"}[basis]
-        restated = contrib.filter(~pl.col("MassCounts"))
-        if restated.height:
-            labels = sorted(set(restated.get_column("Analyte").to_list()))
-            shown = ", ".join(labels[:6]) + (" …" if len(labels) > 6 else "")
-            warnings.append(
-                f"{restated.height} Ci row(s) set aside on the mass basis ({shown}): a reported "
-                f"elemental mass already includes its radionuclides, so adding the bridged grams "
-                f"would count the same material twice."
-            )
+        warnings.extend(_mass_restatement_warnings(contrib))
         dropped = contrib.filter(pl.col("Mass_g").is_null() & (pl.col("Units") == "Ci"))
         if dropped.height:
             labels = sorted(set(dropped.get_column("Analyte").to_list()))
@@ -703,7 +855,11 @@ def run_query(
             layer_keys = [k for k in keys if k in LAYER_COMPATIBLE_DIMS]
             denom = _layer_denominators(df, layer_keys)
             if layer_keys:
-                out = out.join(denom, on=layer_keys, how="left")
+                # nulls_equal: group_by keeps null keys, so a null-keyed
+                # group HAS a denominator row -- without this it never
+                # matched its own, and the blanked value was reported
+                # under a warning blaming absent volume/density data.
+                out = out.join(denom, on=layer_keys, how="left", nulls_equal=True)
             else:
                 out = out.join(denom, how="cross")
             # Review finding: a null/zero denominator (Volume or
@@ -732,7 +888,21 @@ def run_query(
     table = _aggregate(included, group_by).to_pandas()
     member_table = _aggregate(included, list(dict.fromkeys(["Member"] + group_by))).to_pandas()
 
+    # The same value expression over the rows the restatement rules set
+    # aside, so "reported - counted" is explainable rather than residual.
+    if basis == "Ci":
+        set_aside = contrib.filter(pl.col("Ci_value").is_not_null() & ~pl.col("ActivityCounts"))
+    elif basis == "kg":
+        set_aside = contrib.filter((pl.col("Units") == "kg") & ~pl.col("MassCounts"))
+    else:
+        set_aside = contrib.filter(pl.col("Mass_g").is_not_null() & ~pl.col("MassCounts"))
+    restated_value = (
+        float(set_aside.select(value_expr.alias("_v")).get_column("_v").sum() or 0.0)
+        if set_aside.height else 0.0
+    )
+
     return QueryResult(
         table=table, member_table=member_table, warnings=warnings,
         disclosures=disclosures, value_column=value_col, basis=basis,
+        restated_value=restated_value,
     )

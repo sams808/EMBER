@@ -106,10 +106,17 @@ class TestTankProfile:
     def test_empty_when_no_matching_tanks(self, sample_dataset):
         assert ts.tank_profile(sample_dataset, ["241-Z-999"]).empty
 
-    def test_top_n_scales_with_tank_count(self, sample_dataset):
-        out = ts.tank_profile(sample_dataset, ["241-A-101", "241-AN-104"], top_n=1)
-        # head(top_n * n_tanks) = head(2), not head(1)
-        assert len(out) == 2
+    def test_top_n_applies_per_tank_and_unit(self, sample_dataset):
+        """Top-N is "how many elements to show", per tank -- not a global
+        row budget. It used to be head(top_n * n_tanks) over a tank-ordered
+        sort, which let the alphabetically-first tanks spend the whole
+        budget and dropped later tanks entirely (review finding)."""
+        tanks = ["241-A-101", "241-AN-104"]
+        out = ts.tank_profile(sample_dataset, tanks, top_n=1)
+        # Both tanks, in both units they report: 2 tanks x 2 units x 1 element.
+        assert len(out) == 4
+        assert sorted(out["WasteSiteId"].unique()) == tanks
+        assert out.groupby(["Units", "WasteSiteId"]).size().eq(1).all()
 
 
 class TestRawRowsForTank:

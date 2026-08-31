@@ -104,7 +104,7 @@ def element_totals(
         warnings.append(f"{len(table) - top_n} of {len(table)} elements omitted "
                         f"(showing the top {top_n} by {basis}).")
         table = table.head(top_n)
-    warnings.extend(_unattributable_warning(dataset, basis, scope, members))
+    warnings.extend(_unattributable_warning(dataset, basis, scope, members, totals.restated_value))
 
     return ElementTotals(
         table=table.reset_index(drop=True), warnings=warnings,
@@ -166,7 +166,7 @@ def engine_matrix(
             f"(showing the top {len(kept)} by {basis})."
         )
 
-    warnings.extend(_unattributable_warning(dataset, basis, query_scope, members))
+    warnings.extend(_unattributable_warning(dataset, basis, query_scope, members, result.restated_value))
     warnings.extend(_tank_trim_warning(dataset, scope, tank_subset))
 
     long_df = members[members["Member"].astype(str).isin(kept)].copy()
@@ -215,14 +215,19 @@ def _tank_trim_warning(
 
 def _unattributable_warning(
     dataset: HanfordDataset, basis: str, scope: Optional[Dict[str, Sequence[str]]],
-    members: pd.DataFrame,
+    members: pd.DataFrame, restated_value: float = 0.0,
 ) -> List[str]:
     """Mass in scope that reached NO element. The engine's own
     unregistered-species warning only sees rows it can parse as compounds,
     so analytes it cannot resolve at all (Aroclors, ketones, phthalates --
     515 kg on the shipped dataset, including the entire PCB inventory)
     were excluded in total silence. Comparing totals catches every cause,
-    including ones nobody has thought of yet."""
+    including ones nobody has thought of yet.
+
+    `restated_value` is what the engine deliberately set aside as a
+    restatement. It must come out of the comparison: it is accounted for,
+    disclosed in its own warning, and counting it here would blame the
+    parser for material the engine correctly declined to count twice."""
     if basis not in ("kg", "Ci"):
         return []
     unit = "kg" if basis == "kg" else "Ci"
@@ -234,7 +239,7 @@ def _unattributable_warning(
     if not value_cols:
         return []
     attributed = float(members[value_cols[0]].sum())
-    missing = reported - attributed
+    missing = reported - attributed - float(restated_value or 0.0)
     # Tolerance guards float noise on sums of ~1e8; anything real is
     # orders of magnitude above it.
     if reported <= 0 or missing <= abs(reported) * 1e-12:

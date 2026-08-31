@@ -187,6 +187,34 @@ the same tank/analyte). Every aggregation in Ember sums across duplicates
 rather than assuming one row per tank×analyte — a naive `groupby().first()`
 or a plain lookup would silently under-count.
 
+### 4.4 The BBI describes the same inventory more than once
+
+Some material is reported twice, in two different forms, and adding both
+inflates the answer. Ember resolves this **per layer** (tank × phase ×
+waste type), so a layer that reports only one of the two forms keeps it.
+Three shapes exist, and every one of them is announced in the warnings
+whenever it fires:
+
+1. **A reported mass already includes its radionuclides.** The BBI gives
+   `UTOTAL` in kilograms *and* the activity of each uranium isotope — the
+   same metal, described chemically and radiologically. On a mass basis
+   the bridged isotope grams are counted only in layers that report no
+   mass for that element.
+2. **A combined-nuclide label is the sum of its members.** `239/240Pu`
+   appears alongside `239Pu` and `240Pu`. Exactly one representation
+   survives: the itemised members when all of them are present, the
+   combined label otherwise.
+3. **A reported total already contains its itemisation.** `TOC` is total
+   organic carbon and already holds the oxalate, formate, acetate and
+   glycolate reported beside it. Here the rule inverts — the total is a
+   *superset* (it also covers organics the BBI never itemises, a median
+   82% of it), so the **total** is kept and the itemised members are set
+   aside, and only for carbon: the phosphorus in tributyl phosphate is
+   still booked in full.
+
+Note that `TIC as CO3` is *inorganic* carbon, which `TOC` does not
+contain, so those two are correctly added together.
+
 ---
 
 ## 5. Overview
@@ -507,13 +535,28 @@ input.
 **Workflow:** pick a farm (optional filter) → select one or more tanks
 (selecting 2+ also builds a "Blend (selected tanks)" sample) → **Build
 oxide composition** → review/edit the element→oxide assignment table →
-**Recompute basicity / NBO-T / envelope** whenever you change an
-assignment, a role, or the envelope table.
+**Apply assumptions and recompute** whenever you change an assignment, a
+role, or the envelope table. That button re-runs the conversion itself,
+so an edited element→oxide assignment really does change the numbers.
 
-#### 12.2.1 Element → oxide conversion
+#### 12.2.1 What the input masses are
 
-For each element with a positive kg inventory in the selected tank(s),
-Ember:
+Element masses come from the same stoichiometric apportionment the Query
+workspace uses: a kilogram of SO₄ contributes 32.06/96.06 kg of sulfur,
+not a kilogram. Booking an anion's whole mass to its cation and *then*
+multiplying by the oxide/element molar ratio does not conserve mass — it
+reported more SO₃ than there was sulfate to make it from.
+
+**Oxygen and hydrogen are not listed as components.** On an oxide basis
+the oxygen is carried by the oxide formulas themselves, so booking the
+apportioned free-oxygen pool as well would count the same oxygen twice;
+hydrogen leaves as water when the waste is melted. This is why the oxide
+table's total mass is *less* than the tank's reported kg inventory.
+
+#### 12.2.2 Element → oxide conversion
+
+For each element with a positive apportioned kg inventory in the selected
+tank(s), Ember:
 
 1. Converts kg to grams, and looks up (or lets you override) which oxide
    formula that element is assumed to form.
@@ -529,7 +572,7 @@ Ember:
    literature, so both are always shown together).
 
 The default element→oxide table covers essentially every element with a
-tabulated optical-basicity value (§12.2.2) plus explicit non-oxide flags:
+tabulated optical-basicity value (§12.2.3) plus explicit non-oxide flags:
 
 - **Multivalent elements** (Fe, Cr, Mn, U, Np, Pu, Ce, Co) get one
   pre-selected default oxide *and* a dropdown of chemically reasonable
@@ -557,7 +600,7 @@ answer whenever the tanks have different total masses (a small tank and a
 huge tank don't contribute equally to a real blend just because you
 selected both).
 
-#### 12.2.2 Optical basicity (Λ)
+#### 12.2.3 Optical basicity (Λ)
 
 Optical basicity is a single number, conventionally between roughly 0.3
 (strongly acidic network formers like B₂O₃/P₂O₅) and 1.5+ (strongly basic
@@ -595,7 +638,7 @@ exactly which formulas were **excluded from the basicity calculation**
 alongside the number itself, so you always know whether Λ represents the
 whole composition or only part of it.
 
-#### 12.2.3 NBO/T (non-bridging oxygens per network-forming cation)
+#### 12.2.4 NBO/T (non-bridging oxygens per network-forming cation)
 
 NBO/T is a structural indicator, not a thermodynamic property: it
 estimates, on average, how many of the oxygen atoms attached to each
@@ -630,8 +673,13 @@ Formula:
 ```
 T       = Σ(molᵢ · T-cations per formula unit) over former-role oxides
 O_total = Σ(molᵢ · oxygens per formula unit) over former + modifier oxides
-NBO/T   = (O_total − 2·T) / T
+NBO/T   = (2·O_total − 4·T) / T
 ```
+
+Each tetrahedral cation carries four oxygens and each bridging oxygen is
+shared between two of them, which is where the 2 and the 4 come from. As
+a check: sodium metasilicate (Na₂O·SiO₂) is a chain silicate with two
+non-bridging oxygens per silicon, and this formula returns exactly 2.
 
 **Every oxide's role (former/modifier/other) is editable** in its own
 table — if you disagree with a default classification for your specific
@@ -645,7 +693,7 @@ anomaly problems in real aluminosilicate and borosilicate glasses). Verify
 against your preferred reference or a more detailed structural model
 before using an NBO/T number from here in a publication.
 
-#### 12.2.4 GlassNet property prediction
+#### 12.2.5 GlassNet property prediction
 
 When the optional `glasspy` package is installed, **GlassNet predict**
 runs a pretrained machine-learning model (Cassar, *Ceramics International*
@@ -667,7 +715,7 @@ that build. Run Ember from Python with `pip install glasspy` to enable it.
 The first prediction after launch is slower than subsequent ones (the
 model itself has to load into memory once).
 
-#### 12.2.5 Envelope comparison
+#### 12.2.6 Envelope comparison
 
 A per-oxide `[oxide, min wt%, max wt%]` table you build yourself — **Ember
 ships this empty, with zero hardcoded DOE/PNNL/WTP composition bounds**.

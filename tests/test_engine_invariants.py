@@ -37,6 +37,36 @@ def real_dataset():
     return dataset
 
 
+def _restated_total_mass(df: pl.DataFrame) -> float:
+    """The mass a reported TOTAL already accounts for, so conservation is
+    checked against what the engine may legitimately count rather than
+    against the raw rows.
+
+    Derived here from the raw frame rather than from the engine, so the
+    test does not simply restate the code it is checking: for every layer
+    holding a positive TOC row, each itemised organic anion in that layer
+    contributes its CARBON only -- the oxygen and hydrogen in the same
+    row are still booked, and so is the phosphorus in tributyl phosphate.
+    """
+    layer = ["WasteSiteId", "WastePhase", "WasteType"]
+    total = 0.0
+    for name, (element, members) in rd.SPECIES_TOTAL_MEMBERS.items():
+        holds_total = (
+            df.filter((pl.col("Analyte") == name) & (pl.col("Units") == "kg")
+                      & (pl.col("Inventory") > 0))
+            .select(layer).unique()
+        )
+        if holds_total.is_empty():
+            continue
+        itemised = df.filter(
+            (pl.col("Units") == "kg") & pl.col("Analyte").is_in(list(members))
+        ).join(holds_total, on=layer, how="semi", nulls_equal=True)
+        for row in itemised.select(["Analyte", "Inventory"]).iter_rows(named=True):
+            fraction = rd.SPECIES_ELEMENT_MASS_FRACTIONS[row["Analyte"]].get(element, 0.0)
+            total += float(row["Inventory"]) * fraction
+    return total
+
+
 @requires_real_data
 class TestMassConservation:
     def test_apportioning_every_element_returns_the_reported_mass(self, real_dataset):
@@ -67,6 +97,7 @@ class TestMassConservation:
                        & pl.col("Isotope").is_null()
                        & ~pl.col("Analyte").is_in(registered))
             + reported(is_kg & pl.col("Isotope").is_not_null())            # nuclides reported in kg
+            - _restated_total_mass(df)                                     # counted by their total
         )
         assert apportioned == pytest.approx(expected, rel=1e-9)
 

@@ -14,6 +14,7 @@ import polars as pl
 
 from data_model import HanfordDataset
 from elements import normalize_element_symbol
+from query_engine import drop_pair_restatements
 
 
 def square_matrix_lookup(square_df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
@@ -73,6 +74,9 @@ def matrix_long_wide(
     df = df.filter(pl.col("Inventory") > float(min_inventory))
     if tank_subset is not None and len(tank_subset) > 0:
         df = df.filter(pl.col("WasteSiteId").is_in(list(tank_subset)))
+    # The heatmap must agree with the Query workspace about the same tank,
+    # element and unit (review finding).
+    df, _restatement_note = drop_pair_restatements(df)
     if df.is_empty():
         return pd.DataFrame(), pd.DataFrame()
 
@@ -123,6 +127,10 @@ def element_inventory_matrix(
     """
     df = dataset.require_df().filter((pl.col("Units") == unit) & pl.col("Element").is_not_null())
     df = df.filter(pl.col("Inventory") > float(min_inventory))
+    # Every Ci matrix added a combined pair to its own members before this;
+    # correlation_science and vitrification_science both read through here,
+    # so the whole chain inherited it (review finding).
+    df, _restatement_note = drop_pair_restatements(df)
     if df.is_empty():
         return pd.DataFrame()
 

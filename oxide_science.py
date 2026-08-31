@@ -154,6 +154,27 @@ def convert_composition_to_oxides(
     return pd.DataFrame(out_rows).sort_values("Wt_pct", ascending=False).reset_index(drop=True)
 
 
+# On an oxide basis the oxygen is supplied by each oxide's own formula,
+# so the apportioned free-oxygen pool must NOT also be booked as a
+# component -- that would count the same oxygen twice. Hydrogen leaves as
+# water when the waste is melted. Both are excluded from the conversion
+# input and said so by oxide_basis_note(), never dropped silently.
+IMPLIED_BY_OXIDE_BASIS = ("O", "H")
+
+
+def oxide_basis_note() -> str:
+    """The sentence a table or export must carry to describe its own
+    basis. Kept beside IMPLIED_BY_OXIDE_BASIS so the words and the code
+    cannot drift apart."""
+    return (
+        "Oxide basis: element masses are apportioned stoichiometrically from the reported "
+        "species (a kg of SO4 contributes 32.06/96.06 kg of sulfur, not a kg), then each "
+        "cation is converted to the oxide shown. Oxygen and hydrogen are not listed as "
+        "components — the oxygen is carried by the oxide formulas themselves, and hydrogen "
+        "leaves as water on melting."
+    )
+
+
 def tank_oxide_composition(
     dataset: HanfordDataset, tank_ids: Sequence[str], oxide_map: Optional[Dict[str, Optional[str]]] = None,
 ) -> Dict[str, pd.DataFrame]:
@@ -163,32 +184,50 @@ def tank_oxide_composition(
     kg across tanks FIRST and converting once, which is what physically
     combining the tanks' contents would actually produce (not an average
     of each tank's independently-computed percentages)."""
+    from matrix_query import candidate_elements
+    from query_engine import Basket, run_query
+
     tank_ids = [t for t in tank_ids if t]
     if not tank_ids:
         return {}
-    df = dataset.require_df().filter(
-        (pl.col("Units") == "kg") & pl.col("Element").is_not_null() & pl.col("WasteSiteId").is_in(tank_ids)
-    )
+    elements = candidate_elements(dataset)
     tables: Dict[str, pd.DataFrame] = {}
-    if df.is_empty():
+    if not elements:
         return tables
-    per_tank = df.group_by(["WasteSiteId", "Element"]).agg(pl.col("Inventory").sum().alias("Inventory")).to_pandas()
+    # Stoichiometric masses, not first-element attribution. Booking an
+    # anion's FULL mass to its cation and then multiplying by the
+    # oxide/element molar ratio broke mass conservation outright: tank
+    # 241-AW-106 holds 236,600 kg of sulfate and the table reported
+    # 590,814 kg of SO3, 2.50x the sulfate it came from, when SO4 -> SO3
+    # must LOSE mass. Carbon read 3.66x, nitrogen 4.04x (review finding).
+    result = run_query(
+        dataset,
+        subject=("basket", Basket("Oxides", tuple(elements), "every element in the dataset")),
+        basis="kg",
+        group_by=["WasteSiteId"],
+        scope={"WasteSiteId": list(tank_ids)},
+    )
+    members = result.member_table
+    if members.empty or "Total_kg" not in members.columns:
+        return tables
+
+    per_tank = members[~members["Member"].astype(str).isin(IMPLIED_BY_OXIDE_BASIS)]
     for tank in tank_ids:
         sub = per_tank[per_tank["WasteSiteId"] == tank]
         if sub.empty:
             continue
-        element_kg = dict(zip(sub["Element"], sub["Inventory"]))
+        element_kg = dict(zip(sub["Member"].astype(str), sub["Total_kg"]))
         tables[tank] = convert_composition_to_oxides(element_kg, oxide_map)
     if len(tank_ids) > 1:
         blend_kg: Dict[str, float] = {}
-        for element, inv in zip(per_tank["Element"], per_tank["Inventory"]):
+        for element, inv in zip(per_tank["Member"].astype(str), per_tank["Total_kg"]):
             blend_kg[element] = blend_kg.get(element, 0.0) + float(inv)
         tables["Blend (selected tanks)"] = convert_composition_to_oxides(blend_kg, oxide_map)
     return tables
 
 
 def nbo_over_t(oxide_mol: Dict[str, float], role_map: Optional[Dict[str, str]] = None) -> Dict[str, float]:
-    """NBO/T = (O_total - 2T) / T -- a simplified approximation (does not
+    """NBO/T = (2*O_total - 4T) / T -- a simplified approximation (does not
     model Al/B charge-balance by alkali; verify against your preferred
     reference for publication use). T sums network-forming cations over
     former-role oxides only; O_total sums oxygen over former+modifier
@@ -218,7 +257,11 @@ def nbo_over_t(oxide_mol: Dict[str, float], role_map: Optional[Dict[str, str]] =
             t_sum += mol * n_t
     if t_sum <= 0:
         return {"T": t_sum, "O_total": o_total, "NBO_T": float("nan")}
-    return {"T": t_sum, "O_total": o_total, "NBO_T": (o_total - 2.0 * t_sum) / t_sum}
+    # Each tetrahedral cation carries 4 oxygens, each bridging oxygen is
+    # shared by 2: NBO = 2*O - 4*T. Reporting (O - 2T)/T under the label
+    # "NBO/T" published exactly half the classical quantity -- Na2O.SiO2,
+    # a chain silicate with two non-bridging oxygens per Si, read 1.000.
+    return {"T": t_sum, "O_total": o_total, "NBO_T": (2.0 * o_total - 4.0 * t_sum) / t_sum}
 
 
 def envelope_check(composition_wt_pct: Dict[str, float], envelope: Dict[str, Tuple[float, float]]) -> pd.DataFrame:
@@ -282,7 +325,16 @@ def composition_summary(
     mol_map = dict(zip(oxide_rows["Component"], oxide_rows["Mol"]))
 
     components = [(formula, mol) for formula, mol in mol_map.items() if formula in gscience.OPTICAL_BASICITY]
-    excluded_from_basicity = sorted(set(mol_map) - set(gscience.OPTICAL_BASICITY))
+    # The exclusion set comes from the FULL table, not the oxide-filtered
+    # map: halides, noble metals and anything outside DEFAULT_OXIDE_MAP are
+    # exactly the components basicity cannot describe, and deriving the set
+    # from mol_map dropped them before they could be reported. All 177
+    # shipped tanks disclosed an empty exclusion list as a result, against
+    # a documented guarantee that the panel always says whether Lambda
+    # covers the whole composition or only part of it.
+    excluded_from_basicity = sorted(
+        set(oxide_table["Component"].astype(str)) - set(gscience.OPTICAL_BASICITY)
+    )
     basicity = float("nan")
     if components:
         try:
