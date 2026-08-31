@@ -76,7 +76,8 @@ class TestDatasetLoadBroadcast:
         path = tmp_path / "custom.csv"
         path.write_text(
             "WasteSiteId,Analyte,WastePhase,WasteType,Inventory,Units\n"
-            "241-A-101,137Cs,Liquid,T1,100.0,Ci\n"
+            "241-A-101,SO4,Liquid,T1,100.0,kg\n"
+            "241-A-101,Cl,Liquid,T1,3.0,kg\n"
         )
         return path
 
@@ -106,6 +107,35 @@ class TestDatasetLoadBroadcast:
     def test_reload_without_prior_load_shows_info_message(self, window):
         assert window.dataset.path is None
         window._reload()  # must not raise; QMessageBox.information is neutralized by conftest
+
+
+class TestGuidedQuestionsMenu:
+    """Moved off the Query workspace's control row (their labels are full
+    sentences, which crowded the controls they introduce) into
+    View -> Guided questions."""
+
+    def test_every_template_has_a_menu_entry(self, window):
+        from query_templates import TEMPLATES
+        assert [a.text() for a in window.guided_actions] == [t.question for t in TEMPLATES]
+        assert window.guided_menu.title() == "Guided questions"
+
+    def test_choosing_one_navigates_to_query_and_answers(self, window, tmp_path, qtbot):
+        from query_templates import TEMPLATES
+        path = tmp_path / "guided.csv"
+        path.write_text("\n".join([
+            "WasteSiteId,Analyte,WastePhase,WasteType,Inventory,Units",
+            "241-A-101,SO4,Liquid,T1,100.0,kg",
+            "241-A-101,Cl,Liquid,T1,3.0,kg",
+            "",
+        ]))
+        window._start_load(lambda: window.dataset.load(path, use_cache=False))
+        qtbot.wait(50)
+        template = next(t for t in TEMPLATES if t.key == "sulfate_by_tank")
+        assert window.run_guided_question(template) is True
+        qtbot.wait(20)
+        assert window.stack.currentWidget() is window.query_page
+        assert window.query_page._result is not None
+        assert window.query_page.subject_edit.text() == "SO4"
 
 
 class TestGlobalScopeWiring:

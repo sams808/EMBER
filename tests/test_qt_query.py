@@ -158,11 +158,8 @@ class TestRunFillsTheWorkspace:
 
 
 class TestTemplates:
-    def test_picker_lists_every_template_after_the_placeholder(self, qtbot):
-        page = _make_page(qtbot)
-        labels = [page.template_combo.itemText(i) for i in range(page.template_combo.count())]
-        assert labels[0] == "Guided questions…"
-        assert labels[1:] == [t.question for t in TEMPLATES]
+    """The picker itself lives in View -> Guided questions (see
+    test_qt_shell); what this page owns is applying one."""
 
     def test_applying_a_template_sets_controls_and_runs(self, qtbot):
         page = _make_page(qtbot)
@@ -177,11 +174,12 @@ class TestTemplates:
         assert page.group2_combo.currentText() == "Waste phase"
         assert page._result is not None
 
-    def test_placeholder_activation_is_a_no_op(self, qtbot):
+    def test_every_shipped_template_applies_cleanly(self, qtbot):
         page = _make_page(qtbot)
         page.on_dataset_changed(_chem_dataset())
-        page._on_template_activated(0)
-        assert page._result is None
+        for template in TEMPLATES:
+            page.apply_template(template)   # must not raise for any of them
+            qtbot.wait(5)
 
 
 class TestGrammarPlots:

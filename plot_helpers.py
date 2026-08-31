@@ -94,6 +94,21 @@ def bar_figure_height(
     return min(max(floor, n_bars * per_bar), ceiling)
 
 
+def marginal_heatmap_kwargs() -> Dict[str, object]:
+    """Heatmap kwargs for a matrix that carries marginal bar charts.
+
+    `square=True` makes matplotlib shrink the heatmap's drawn box inside
+    its gridspec cell to keep cells square -- which leaves the marginal
+    bars wider (or taller) than the matrix they annotate, because those
+    axes keep the whole cell. Letting the matrix fill its cell instead
+    makes alignment structural: the marginals share the same gridspec
+    column/row and the same data limits, so they cannot drift, and no
+    post-draw correction (which would have to re-run on every resize) is
+    needed. The gridspec ratios already keep cells close to square.
+    """
+    return {"square": False}
+
+
 def heatmap_ytick_step(n_rows: int, dense_limit: int = 80, target: int = 40) -> int:
     """Row-label thinning for tall heatmaps: label every row while they
     still fit, then every Nth so labels stay readable."""
@@ -361,17 +376,26 @@ def plot_correlation_heatmap(
     if use_seaborn and with_projection:
         proj_raw = _aligned_projection_values(elements, totals)
         proj = np.log10(proj_raw + 1.0)
-        panel.set_figure_size_inches(base_size + 2.5, base_size + 1.8)
+        panel.set_figure_size_inches(base_size + 3.2, base_size + 1.8)
+        # The colorbar gets its OWN column. Left to seaborn it is carved
+        # out of the heatmap's axes, which narrows the matrix while the
+        # bar chart above keeps the full column -- the bars then overhang
+        # the columns they label.
         gs = panel.figure.add_gridspec(
-            2, 2, width_ratios=[base_size, 2.2], height_ratios=[1.4, base_size], wspace=0.05, hspace=0.05,
+            2, 4, width_ratios=[base_size, 0.30, 1.05, 2.2],
+            height_ratios=[1.4, base_size], wspace=0.05, hspace=0.05,
         )
-        ax_top = panel.figure.add_subplot(gs[0, 0])
         ax = panel.figure.add_subplot(gs[1, 0])
-        ax_right = panel.figure.add_subplot(gs[1, 1], sharey=ax)
+        ax_cbar = panel.figure.add_subplot(gs[1, 1])
+        # Share both axes with the heatmap so the marginals track its data
+        # limits, and let the matrix fill its gridspec cell (see
+        # marginal_heatmap_kwargs) so the boxes line up structurally.
+        ax_top = panel.figure.add_subplot(gs[0, 0], sharex=ax)
+        ax_right = panel.figure.add_subplot(gs[1, 3], sharey=ax)
 
-        x = np.arange(n)
-        ax_top.bar(x, proj, color="0.45", alpha=0.85)
-        ax_top.set_xlim(-0.5, n - 0.5)
+        x = np.arange(n) + 0.5   # seaborn's cell centres
+        ax_top.bar(x, proj, width=0.8, color="0.45", alpha=0.85)
+        ax_top.set_xlim(0, n)
         ax_top.set_ylabel(f"log10(total {unit}+1)" if unit else "log10(total+1)", fontsize=8)
         ax_top.tick_params(axis="x", bottom=False, labelbottom=False)
         ax_top.grid(True, axis="y", alpha=0.2)
@@ -379,10 +403,11 @@ def plot_correlation_heatmap(
             ax_top.spines[spine].set_visible(False)
 
         sns.heatmap(
-            data, mask=upper_mask, vmin=-1, vmax=1, cmap="vlag", center=0, square=True,
+            data, mask=upper_mask, vmin=-1, vmax=1, cmap="vlag", center=0,
+            **marginal_heatmap_kwargs(),
             linewidths=0.4 if n <= 45 else 0.0, linecolor="white",
             annot=bool(annotate and n <= 25), fmt=".2f",
-            cbar_kws={"label": "Correlation r", "shrink": 0.75}, ax=ax,
+            cbar_ax=ax_cbar, cbar_kws={"label": "Correlation r"}, ax=ax,
         )
         # suptitle, not ax.set_title(): ax sits directly below ax_top with
         # hspace=0.05 (no room reserved between rows for a title), so an
@@ -608,14 +633,17 @@ def plot_seaborn_lower_triangle_matrix(
         if totals is not None and not totals.empty and "Element" in totals.columns and "Total_inventory_kg" in totals.columns:
             total_map = {str(r.Element): float(r.Total_inventory_kg or 0.0) for r in totals.itertuples(index=False)}
         proj = np.array([math.log10(max(total_map.get(e, 0.0), 0.0) + 1.0) for e in elements], dtype=float)
-        panel.set_figure_size_inches(base_size + 2.5, base_size + 1.8)
-        gs = panel.figure.add_gridspec(2, 2, width_ratios=[base_size, 2.2], height_ratios=[1.4, base_size], wspace=0.05, hspace=0.05)
-        ax_top = panel.figure.add_subplot(gs[0, 0])
+        panel.set_figure_size_inches(base_size + 3.2, base_size + 1.8)
+        gs = panel.figure.add_gridspec(
+            2, 4, width_ratios=[base_size, 0.30, 1.05, 2.2],
+            height_ratios=[1.4, base_size], wspace=0.05, hspace=0.05)
         ax = panel.figure.add_subplot(gs[1, 0])
-        ax_right = panel.figure.add_subplot(gs[1, 1], sharey=ax)
-        x = np.arange(n)
-        ax_top.bar(x, proj, color=projection_color, alpha=0.88)
-        ax_top.set_xlim(-0.5, n - 0.5)
+        ax_cbar = panel.figure.add_subplot(gs[1, 1])
+        ax_top = panel.figure.add_subplot(gs[0, 0], sharex=ax)
+        ax_right = panel.figure.add_subplot(gs[1, 3], sharey=ax)
+        x = np.arange(n) + 0.5   # seaborn's cell centres
+        ax_top.bar(x, proj, width=0.8, color=projection_color, alpha=0.88)
+        ax_top.set_xlim(0, n)
         ax_top.set_ylabel("log10(total kg+1)", fontsize=8)
         ax_top.tick_params(axis="x", bottom=False, labelbottom=False)
         ax_top.grid(True, axis="y", alpha=0.2)
@@ -624,11 +652,15 @@ def plot_seaborn_lower_triangle_matrix(
     else:
         panel.set_figure_size_inches(base_size, base_size)
         ax = panel.figure.add_subplot(111)
+        ax_cbar = None
 
     sns.heatmap(
         data, mask=mask, vmin=-1 if "correlation" in cbar_label.lower() else 0, vmax=1, center=center, cmap=cmap,
-        square=True, linewidths=0.4 if n <= 45 else 0.0, linecolor="white",
-        annot=bool(annotate and n <= 25), fmt=".2f", cbar_kws={"label": cbar_label, "shrink": 0.75}, ax=ax,
+        square=not projections, linewidths=0.4 if n <= 45 else 0.0, linecolor="white",
+        annot=bool(annotate and n <= 25), fmt=".2f",
+        cbar_ax=ax_cbar,
+        cbar_kws={"label": cbar_label} if ax_cbar is not None else {"label": cbar_label, "shrink": 0.75},
+        ax=ax,
     )
     if projections:
         # suptitle, not ax.set_title(): ax sits directly below ax_top with

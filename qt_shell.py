@@ -33,6 +33,7 @@ from qt_scope import GlobalScope, GlobalScopeBar
 from qt_tank_attributes import TankAttributesPage
 from qt_tank_explorer import TankExplorerPage
 from qt_vitrification import VitrificationPage
+from query_templates import TEMPLATES
 from qt_widgets import StatusLogger
 from qt_worker import run_in_thread
 
@@ -243,6 +244,18 @@ class EmberMainWindow(QMainWindow):
         file_menu.addAction("Exit", self.close, "Ctrl+Q")
 
         view_menu = self.menuBar().addMenu("&View")
+        # Held on self: a submenu whose only Python reference is a local
+        # can be collected while Qt still owns the C++ object, which shows
+        # up as an access violation during widget teardown.
+        self.guided_menu = view_menu.addMenu("Guided questions")
+        self.guided_actions = []
+        for template in TEMPLATES:
+            action = self.guided_menu.addAction(template.question)
+            action.setToolTip(template.explanation)
+            action.triggered.connect(
+                lambda checked=False, t=template: self.run_guided_question(t))
+            self.guided_actions.append(action)
+        view_menu.addSeparator()
         self.dark_mode_action = view_menu.addAction("Dark mode")
         self.dark_mode_action.setCheckable(True)
         self.dark_mode_action.toggled.connect(self._on_dark_mode_toggled)
@@ -431,6 +444,15 @@ class EmberMainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Project opened: {Path(path).name} "
             f"({len(project.questions)} saved question(s))")
+
+    def run_guided_question(self, template) -> bool:
+        """Show the Query workspace and answer one shipped starter
+        question there. Returns False without answering if the workspace
+        can't be shown -- a completed query on a hidden page helps no one."""
+        if not self._go_to_nav(NAV_QUERY):
+            return False
+        self.query_page.apply_template(template)
+        return True
 
     def show_getting_started(self) -> None:
         dialog = GettingStartedDialog(self)

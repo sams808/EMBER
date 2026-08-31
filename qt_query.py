@@ -39,7 +39,6 @@ from query_templates import TEMPLATES
 
 _SUBJECT_KINDS = ["Basket", "Element", "Analyte"]
 _NO_DIM = "—"
-_TEMPLATE_PLACEHOLDER = "Guided questions…"
 # Marks this workspace offers, and the reverse lookups -- all derived from
 # the grammar's own registry so a mark can never exist there but be
 # untranslatable (or silently mislabeled) here. Scatter needs two value
@@ -89,20 +88,11 @@ class QueryPage(QWidget):
         root.addLayout(header)
 
         primary = QHBoxLayout()
-        # Guided questions FIRST: the easiest entry point sits where a new
-        # user reads first. Templates fill the controls and run, so the
-        # knobs that produced the answer stay visible, not hidden.
-        self.template_combo = QComboBox()
-        self.template_combo.addItem(_TEMPLATE_PLACEHOLDER)
-        for template in TEMPLATES:
-            self.template_combo.addItem(template.question)
-        for i, template in enumerate(TEMPLATES, start=1):
-            self.template_combo.setItemData(i, template.explanation, 3)  # Qt.ToolTipRole
-        self.template_combo.setToolTip("One-click starter questions — picking one fills the controls below and runs.")
-        self.template_combo.activated.connect(self._on_template_activated)
-        primary.addWidget(self.template_combo)
-
-        primary.addSpacing(10)
+        # Guided questions live in View -> Guided questions rather than on
+        # this row: their labels are full sentences, which crowded the
+        # controls they are meant to introduce. Picking one still fills
+        # every control here and runs, so the knobs that produced the
+        # answer stay visible.
         primary.addWidget(QLabel("Subject"))
         self.kind_combo = QComboBox()
         self.kind_combo.addItems(_SUBJECT_KINDS)
@@ -187,12 +177,6 @@ class QueryPage(QWidget):
     def _on_kind_changed(self, kind: str) -> None:
         self.basket_combo.setVisible(kind == "Basket")
         self.subject_edit.setVisible(kind != "Basket")
-
-    def _on_template_activated(self, index: int) -> None:
-        if index <= 0:
-            return
-        template = TEMPLATES[index - 1]
-        self.apply_template(template)
 
     def apply_template(self, template) -> None:
         """Fill every control from a guided template, then run."""
