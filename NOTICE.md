@@ -960,3 +960,51 @@ questions, and each says which.)
 
 Every result exports as CSV with the warnings and disclosures alongside
 the numbers.
+
+---
+
+## 20. Projects and provenance
+
+Two things make a number defensible a year after you produced it: knowing
+exactly what produced it, and being able to run it again.
+
+### Provenance records
+
+Every export can carry a `provenance` record (`provenance.py`) stating:
+
+- **which data** — the source file, its row and column counts, and a
+  SHA-256 of its first 4 MB. The BBI is re-published periodically, so
+  "I ran it on Hanford.csv" identifies nothing on its own; the
+  fingerprint distinguishes one revision from another. It is labelled a
+  *head* hash and is not a whole-file checksum.
+- **which question** — the subject, basis, grouping and scope, plus the
+  plot spec. Both are declarative, so the record is the query itself
+  rather than a description of it.
+- **which assumptions** — the reference tables in force (CIAAW 2021
+  atomic weights; ICRP-107 half-lives updated to current evaluations),
+  the app and Python versions, and *every warning and disclosure the
+  engine raised*. A number is only as good as the exclusions behind it.
+
+`methods_paragraph()` renders that record as prose for a methods
+section — including the caveats, which is the part a hand-written
+methods paragraph usually loses.
+
+### `.ember` project files
+
+A project (`ember_project.py`) saves the work that would otherwise be
+retyped: custom baskets, saved questions (subject × basis × grouping ×
+scope × mark), tank lists, and the active scope. This is possible only
+because the query and plot layers are declarative — a saved question is
+plain data, not a closure.
+
+Project files are JSON with a version number. Loading is deliberately
+tolerant of keys it does not recognise, so a project written by a newer
+Ember still opens here minus what this build cannot use — but a *format
+version* it cannot read is refused outright rather than half-loaded.
+
+Reopening a project against different data does not fail silently:
+`problems()` lists every saved question that would no longer run (a basis
+that no longer exists, a grouping dimension that was renamed, a basket
+that has gone), and a fingerprint mismatch is reported as a plain
+sentence — *"this project was built on 46,894 rows; the loaded data has
+47,102. Numbers may have moved."*
