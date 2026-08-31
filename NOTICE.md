@@ -199,6 +199,19 @@ panel so labels stay legible even at Top N = 40+). **Check the units audit
 before trusting anything downstream** — if a unit you don't expect shows
 up, stop and investigate before building on it.
 
+**Top elements** comes from the query engine (§19), so this page agrees
+with Heatmaps (§9) about what the waste contains: each element receives
+its stoichiometric share of every species reporting it. `N_analytes`
+therefore counts the species that carry the element — sulfur genuinely
+arrives via SO₄, sulfide *and* thiosulfate — rather than being a property
+of one label.
+
+The **Unit** picker sets the basis for that table. `kg` and `Ci` keep a
+single reported unit; **`All` means grams**, with curie rows bridged onto
+the same mass axis through ICRP-107 specific activities. It does *not*
+rank kilograms against curies, which compares nothing. (The other tables
+on this page are audits of the data as reported, and are unaffected.)
+
 ---
 
 ## 6. Element Explorer

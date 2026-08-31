@@ -1,7 +1,10 @@
 import pandas as pd
+import pytest
 from PySide6.QtWidgets import QMainWindow
 
-from qt_overview import OverviewPage, _plot_top_elements
+import data_model as dm
+from plot_grammar import PlotSpec, render_plot
+from qt_overview import OverviewPage
 from qt_widgets import PlotWidget
 
 
@@ -32,15 +35,53 @@ class TestOverviewPage:
         overview_table = page._table_views["Overview"].dataframe()
         assert overview_table.iloc[0]["rows"] == 9
 
-    def test_unit_filter_changes_top_elements_table(self, qtbot, sample_dataset):
+    def test_unit_filter_changes_the_basis_of_top_elements(self, qtbot, sample_dataset):
         page = _make_page(qtbot)
         page.on_dataset_changed(sample_dataset)
         qtbot.wait(20)
         page.unit_combo.setCurrentText("kg")
         page.refresh()
         qtbot.wait(20)
+        assert page._element_totals.value_column == "Total_kg"
         top = page._table_views["Top elements"].dataframe()
-        assert set(top["Units"]) == {"kg"}
+        assert "Element" in top.columns and "Total_kg" in top.columns
+
+    def test_all_units_bridges_onto_one_mass_axis(self, qtbot, sample_dataset):
+        # "All" used to rank kilograms against curies on one axis, which
+        # compares nothing; it now means the engine's bridged mass basis.
+        page = _make_page(qtbot)
+        page.on_dataset_changed(sample_dataset)
+        qtbot.wait(20)
+        page.unit_combo.setCurrentText("All")
+        page.refresh()
+        qtbot.wait(20)
+        assert page._element_totals.basis == "g"
+        assert page._element_totals.value_column == "Total_g"
+
+    def test_top_elements_are_apportioned_not_first_element(self, qtbot):
+        # The whole point of the migration: this page must agree with
+        # Heatmaps about what the waste contains.
+        import polars as pl
+        import reference_data as rd
+        dataset = dm.HanfordDataset()
+        dataset.df = dataset._clean_dataframe(pl.DataFrame({
+            "WasteSiteId": ["241-A-101"],
+            "Analyte": ["SO4"],
+            "WastePhase": ["Supernatant"],
+            "WasteType": ["T1"],
+            "Inventory": [100.0],
+            "Units": ["kg"],
+        }))
+        dataset.report = None
+        page = _make_page(qtbot)
+        page.on_dataset_changed(dataset)
+        page.unit_combo.setCurrentText("kg")
+        page.refresh()
+        qtbot.wait(20)
+        top = page._table_views["Top elements"].dataframe().set_index("Element")
+        assert top.loc["S", "Total_kg"] == pytest.approx(
+            100.0 * rd.SPECIES_ELEMENT_MASS_FRACTIONS["SO4"]["S"])
+        assert "O" in top.index  # oxygen exists only under apportionment
 
     def test_farm_plot_labels_match_the_data_actually_plotted(self, qtbot, sample_dataset):
         # Review finding: _update_plot labeled the farm plot with the LIVE
@@ -96,31 +137,36 @@ class TestOverviewPage:
         assert (bundles[0] / "overview.csv").exists()
 
 
-class TestPlotTopElements:
+class TestBarChartSizing:
     """Regression coverage for the Overview "Top elements by inventory"
-    chart: with Top N left at its default of 40, a fixed-height figure
-    crammed every y-tick label (element + unit) into the same vertical
-    space, making them overlap into illegibility even though the panel had
-    plenty of unused space below the chart."""
+    chart, now drawn by the plot grammar: with Top N left at its default
+    of 40, a fixed-height figure crammed every y-tick label into the same
+    vertical space, making them overlap into illegibility even though the
+    panel had plenty of unused space below the chart. These pin the
+    sizing contract wherever that chart is rendered from."""
 
     def _df(self, n):
         return pd.DataFrame({
             "Element": [f"E{i}" for i in range(n)],
-            "Units": ["kg"] * n,
-            "TotalInventory": [float(n - i) for i in range(n)],
+            "Total_kg": [float(n - i) for i in range(n)],
         })
+
+    def _draw(self, panel, n):
+        render_plot(panel, self._df(n), PlotSpec(
+            mark="bar", x="Total_kg", y="Element",
+            title="Top elements by inventory", log_x=True, top_n=n,
+        ))
 
     def test_more_bars_grows_figure_height(self, qtbot):
         panel = PlotWidget()
         qtbot.addWidget(panel)
-        _plot_top_elements(panel, self._df(3), "kg")
+        self._draw(panel, 3)
         qtbot.wait(20)
         small_height = panel.figure.get_size_inches()[1]
 
-        _plot_top_elements(panel, self._df(40), "kg")
+        self._draw(panel, 40)
         qtbot.wait(20)
-        large_height = panel.figure.get_size_inches()[1]
-        assert large_height > small_height
+        assert panel.figure.get_size_inches()[1] > small_height
 
     def test_canvas_pixel_height_grows_too(self, qtbot):
         # The figure's declared inches size changing isn't sufficient on its
@@ -129,11 +175,11 @@ class TestPlotTopElements:
         # be resized too (via PlotWidget.set_figure_size_inches).
         panel = PlotWidget()
         qtbot.addWidget(panel)
-        _plot_top_elements(panel, self._df(3), "kg")
+        self._draw(panel, 3)
         qtbot.wait(20)
         small_px = panel.canvas.height()
 
-        _plot_top_elements(panel, self._df(40), "kg")
+        self._draw(panel, 40)
         qtbot.wait(20)
         assert panel.canvas.height() > small_px
 
@@ -150,7 +196,7 @@ class TestPlotTopElements:
         qtbot.wait(20)  # let any deferred draw_idle from show()/resize() flush
 
         try:
-            _plot_top_elements(panel, self._df(40), "kg")
+            self._draw(panel, 40)
             qtbot.wait(20)
 
             available_px = panel.height() - panel.toolbar.height() - 24

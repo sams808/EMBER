@@ -46,6 +46,72 @@ class MatrixResult:
     value_column: str = ""
 
 
+@dataclass
+class ElementTotals:
+    """Ranked element totals for a whole dataset (the Overview headline)."""
+
+    table: pd.DataFrame = field(default_factory=pd.DataFrame)
+    warnings: List[str] = field(default_factory=list)
+    disclosures: List[str] = field(default_factory=list)
+    value_column: str = ""
+    basis: str = ""
+
+
+def element_totals(
+    dataset: HanfordDataset,
+    *,
+    basis: str = "kg",
+    top_n: int = 40,
+    scope: Optional[Dict[str, Sequence[str]]] = None,
+) -> ElementTotals:
+    """Every element ranked by apportioned total, with how many tanks and
+    how many distinct analytes contribute to each.
+
+    Two queries: one ungrouped (totals and tank counts, which cannot be
+    summed out of a grouped result) and one grouped by Analyte (which
+    species carry each element -- more informative under apportionment
+    than it was before, since sulfur genuinely arrives via SO4, sulfide
+    and thiosulfate)."""
+    elements = candidate_elements(dataset)
+    if not elements:
+        return ElementTotals(basis=basis)
+
+    basket = Basket("All elements", tuple(elements), "every element in the dataset")
+    totals = run_query(dataset, subject=("basket", basket), basis=basis, scope=scope)
+    by_species = run_query(dataset, subject=("basket", basket), basis=basis,
+                           group_by=["Analyte"], scope=scope)
+
+    members = totals.member_table
+    if members.empty:
+        return ElementTotals(warnings=list(totals.warnings),
+                             disclosures=list(totals.disclosures), basis=basis)
+
+    value_col = totals.value_column
+    table = members.rename(columns={"Member": "Element"})[
+        ["Element", value_col, "N_tanks"]
+    ].copy()
+
+    if not by_species.member_table.empty:
+        counts = (
+            by_species.member_table.groupby("Member", dropna=False)["Analyte"]
+            .nunique().rename("N_analytes")
+        )
+        table["N_analytes"] = table["Element"].map(counts).fillna(0).astype(int)
+
+    table = table[table[value_col] > 0].sort_values(value_col, ascending=False)
+    warnings = list(totals.warnings)
+    if len(table) > top_n:
+        warnings.append(f"{len(table) - top_n} of {len(table)} elements omitted "
+                        f"(showing the top {top_n} by {basis}).")
+        table = table.head(top_n)
+    warnings.extend(_unattributable_warning(dataset, basis, scope, members))
+
+    return ElementTotals(
+        table=table.reset_index(drop=True), warnings=warnings,
+        disclosures=list(totals.disclosures), value_column=value_col, basis=basis,
+    )
+
+
 def candidate_elements(dataset: HanfordDataset) -> List[str]:
     """Every element this dataset can speak about: those tagged on a row,
     plus every constituent of a registered species (oxygen only ever

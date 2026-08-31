@@ -7,55 +7,32 @@ from __future__ import annotations
 
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton,
     QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 
+import matrix_query as mq
 import overview_science as ov
 import plot_helpers as ph
 import tank_science as tsci
 from data_model import HanfordDataset
-from plot_helpers import composable
+from plot_grammar import PlotSpec, render_plot
 from qt_help import make_help_button
 from qt_widgets import DataFrameTableView, PlotWidget
 
 PLOT_TYPES = ["Top elements by inventory", "Farm rollup by inventory"]
 
+# The Overview unit picker offers "All" alongside the dataset's own units.
+# For element totals that maps onto the engine's bridged mass basis rather
+# than ranking kilograms against curies on one axis, which is not a
+# comparison of anything.
+_ELEMENT_BASIS = {"All": "g"}
 
-@composable
-def _plot_top_elements(panel: PlotWidget, df: pd.DataFrame, unit_label: str) -> None:
-    panel.reset_axes()
-    if df.empty:
-        panel.show_message("No data for this unit yet.")
-        return
-    ranked = df.sort_values("TotalInventory", ascending=True)
-    values = ranked["TotalInventory"].to_numpy(dtype=float)
-    labels = ranked["Element"].astype(str) + " [" + ranked["Units"].astype(str) + "]"
-    positive = values > 0
-    if not positive.any():
-        panel.show_message("No positive inventory values to plot.")
-        return
-    # Scale figure height with the bar count -- a fixed-height figure crams
-    # every label into the same vertical space regardless of Top N, which
-    # is what makes a 40-bar chart's y-tick labels overlap into
-    # illegibility even though the panel has plenty of unused space below.
-    # set_figure_size_inches() caps this at what's actually visible on its
-    # own (there's no scroll area around the canvas), so no manual cap
-    # needed here.
-    n_bars = int(positive.sum())
-    height = min(max(4.5, n_bars * 0.26), 16.0)
-    width = panel.figure.get_size_inches()[0]
-    panel.set_figure_size_inches(width, height)
-    panel.ax.barh(np.array(labels)[positive], values[positive], color="#c1502e")
-    panel.ax.set_xscale("log")
-    panel.ax.set_xlabel(f"Total inventory ({unit_label})" if unit_label != "All" else "Total inventory")
-    panel.ax.set_title("Top elements by inventory")
-    panel.ax.grid(alpha=0.25, axis="x")
-    panel.figure.tight_layout()
-    panel.canvas.draw_idle()
+
+def _element_basis(unit: str) -> str:
+    return _ELEMENT_BASIS.get(unit, unit)
 
 
 class OverviewPage(QWidget):
@@ -63,10 +40,9 @@ class OverviewPage(QWidget):
         super().__init__(parent)
         self.app_window = app_window
         self.dataset: Optional[HanfordDataset] = None
-        self._top_elements_df = pd.DataFrame()
+        self._element_totals = mq.ElementTotals()
         self._farm_rollup_df = pd.DataFrame()
         self._farm_rollup_unit_used: Optional[str] = None
-        self._unit_label = "All"
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -150,8 +126,15 @@ class OverviewPage(QWidget):
 
         self._table_views["Overview"].set_dataframe(ov.overview(self.dataset))
         self._table_views["Units"].set_dataframe(ov.units_audit(self.dataset))
-        top_elements = ov.top_elements(self.dataset, unit=unit, top_n=top_n)
-        self._table_views["Top elements"].set_dataframe(top_elements)
+        # Element totals come from the query engine, so this page agrees
+        # with Heatmaps about what the waste contains: each element gets
+        # its stoichiometric share of every species reporting it, and
+        # "All" means kg and Ci bridged onto one mass axis rather than
+        # ranked against each other.
+        element_totals = mq.element_totals(
+            self.dataset, basis=_element_basis(unit), top_n=top_n)
+        self._element_totals = element_totals
+        self._table_views["Top elements"].set_dataframe(element_totals.table)
         self._table_views["Top analytes"].set_dataframe(ov.top_analytes(self.dataset, unit=unit, top_n=top_n))
         self._table_views["Waste phases"].set_dataframe(ov.phase_audit(self.dataset))
         self._table_views["Waste types"].set_dataframe(ov.type_audit(self.dataset))
@@ -162,14 +145,12 @@ class OverviewPage(QWidget):
         self._table_views["Missing"].set_dataframe(ov.missing_audit(self.dataset))
         self._table_views["Raw preview"].set_dataframe(self.dataset.raw_preview(250))
 
-        self._top_elements_df = top_elements
         self._farm_rollup_df = farm_rollup
         # The unit the cached rollup was actually computed in -- the plot
         # must label with THIS, never the live combo, which the user may
         # have changed since the last Refresh (a "(kg)" title over Ci bars
         # is a silently wrong chart).
         self._farm_rollup_unit_used = farm_unit
-        self._unit_label = unit
         self._update_plot()
         if announce:
             self.app_window.statusBar().showMessage(f"Overview refreshed ({unit}, top {top_n}).")
@@ -202,7 +183,16 @@ class OverviewPage(QWidget):
                 top_n=50,
             )
         else:
-            _plot_top_elements(self.plot, self._top_elements_df, self._unit_label)
+            totals = self._element_totals
+            if totals.table.empty:
+                self.plot.show_message("No element totals for this dataset.")
+                return
+            render_plot(self.plot, totals.table, PlotSpec(
+                mark="bar", x=totals.value_column, y="Element",
+                title="Top elements by inventory",
+                subtitle="Apportioned (stoichiometric)",
+                log_x=True, top_n=len(totals.table),
+            ))
 
     def _export_debug_bundle(self) -> None:
         if self.dataset is None or not self.dataset.is_loaded():
