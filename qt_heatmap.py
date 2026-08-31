@@ -50,8 +50,18 @@ class HeatmapPage(QWidget):
         self.scope = scope if scope is not None else GlobalScope(self)
         self.dataset: Optional[HanfordDataset] = None
         self._result = mq.MatrixResult()
-        self._result_scope = ""
+        # Every setting that produced the standing result. Labels, the
+        # subtitle and the export all read THIS, never the live widgets:
+        # only the Mode combo triggers a redraw, so a Basis or Attribution
+        # changed afterwards would otherwise relabel data it never touched
+        # (review finding -- a figure titled "Ci" over kg data).
+        self._params: dict = {}
+        self._has_built = False
         self._build_ui()
+
+    @property
+    def _result_scope(self) -> str:
+        return self._params.get("scope", "")
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -168,17 +178,20 @@ class HeatmapPage(QWidget):
                 self.unit_combo.setCurrentIndex(restore)
         self.unit_combo.blockSignals(False)
         self._result = mq.MatrixResult()
-        self._result_scope = ""
+        self._params = {}
+        self._has_built = False
         for view in (self.long_view, self.wide_view, self.notes_view):
             view.set_dataframe(pd.DataFrame())
         self.warnings_label.setVisible(False)
         self.plot.show_message("Build a heatmap to see results.")
 
     def on_scope_changed(self) -> None:
-        """Rebuild under the new scope, but only if a matrix is standing --
-        the scope bar is visible above this workspace precisely because it
-        honors this."""
-        if not self._result.wide_df.empty:
+        """Rebuild under the new scope once the user has asked for a
+        matrix at all. Guarding on "the last build returned rows" instead
+        would strand the workspace: a scope that emptied the matrix would
+        stop every later scope change from rebuilding it (review
+        finding)."""
+        if self._has_built:
             self.run()
 
     def run(self) -> None:
@@ -187,20 +200,23 @@ class HeatmapPage(QWidget):
             return
         unit = self.unit_combo.currentText()
         top_n = self.top_n_spin.value()
+        min_inv = self.min_inv_spin.value()
+        max_tanks = self.max_tanks_spin.value()
+        attribution = self.attribution_combo.currentText()
         scope = self.scope.as_scope()
 
         tank_subset = None
-        if self.max_tanks_spin.value() > 0:
+        if max_tanks > 0:
             tank_subset = msci.top_tanks_by_inventory(
-                mq._scoped_copy(self.dataset, scope), unit, self.max_tanks_spin.value())
+                mq._scoped_copy(self.dataset, scope), unit, max_tanks)
 
         try:
-            if self.attribution_combo.currentText() == mq.APPORTIONED:
+            if attribution == mq.APPORTIONED:
                 result = mq.engine_matrix(
                     self.dataset, basis=unit, top_n_elements=top_n,
                     scope=scope, tank_subset=tank_subset,
                 )
-                if self.min_inv_spin.value() > 0:
+                if min_inv > 0:
                     result.warnings.append(
                         "min inventory is a row-level filter of the as-reported "
                         "attribution and is not applied to apportioned values."
@@ -208,15 +224,19 @@ class HeatmapPage(QWidget):
             else:
                 result = mq.legacy_matrix(
                     self.dataset, unit=unit, top_n_elements=top_n,
-                    min_inventory=self.min_inv_spin.value(),
-                    scope=scope, tank_subset=tank_subset,
+                    min_inventory=min_inv, scope=scope, tank_subset=tank_subset,
                 )
         except ValueError as exc:
             QMessageBox.warning(self, "Heatmaps", str(exc))
             return
 
         self._result = result
-        self._result_scope = self.scope.summary()
+        self._has_built = True
+        self._params = {
+            "basis": unit, "attribution": attribution, "top_n_elements": top_n,
+            "min_inventory": min_inv, "max_tanks": max_tanks,
+            "scope": self.scope.summary(),
+        }
         self.long_view.set_dataframe(result.long_df)
         self.wide_view.set_dataframe(result.wide_df)
         self.notes_view.set_dataframe(pd.DataFrame(
@@ -239,15 +259,24 @@ class HeatmapPage(QWidget):
     def _update_plot(self) -> None:
         result = self._result
         if result.long_df.empty:
+            # Never leave the previous build's figure standing beside
+            # empty tables -- an unscoped chart under a scope that
+            # matched nothing (review finding).
+            self.plot.show_message(
+                "No data for these settings." if self._has_built
+                else "Build a heatmap to see results."
+            )
             return
         log_x, normalize = MODES[self.mode_combo.currentText()]
-        attribution = self.attribution_combo.currentText()
-        subtitle_parts = [attribution]
+        # Labels come from the settings that PRODUCED this result, never
+        # from the live widgets.
+        attribution = self._params.get("attribution", "")
+        subtitle_parts = [p for p in [attribution] if p]
         if self._result_scope:
             subtitle_parts.append(f"Scope: {self._result_scope}")
         spec = PlotSpec(
             mark="heatmap", x=result.value_column, y="WasteSiteId", hue="Element",
-            title=f"Tank × element — {self.unit_combo.currentText()}",
+            title=f"Tank × element — {self._params.get('basis', '')}",
             subtitle=" · ".join(subtitle_parts),
             log_x=log_x, normalize=normalize,
         )
@@ -257,14 +286,16 @@ class HeatmapPage(QWidget):
         if self._result.wide_df.empty and self._result.long_df.empty:
             QMessageBox.information(self, "Export", "Build a heatmap first.")
             return
-        params = pd.DataFrame([
-            {"parameter": "basis", "value": self.unit_combo.currentText()},
-            {"parameter": "mode", "value": self.mode_combo.currentText()},
-            {"parameter": "attribution", "value": self.attribution_combo.currentText()},
-            {"parameter": "top_n_elements", "value": self.top_n_spin.value()},
-            {"parameter": "min_inventory", "value": self.min_inv_spin.value()},
-            {"parameter": "max_tanks", "value": self.max_tanks_spin.value()},
-        ])
+        # Every value here describes the BUILD, not the current widget
+        # state -- an export that labels tables with settings that did not
+        # produce them is a self-consistent lie on disk (review finding).
+        # Mode is the exception: it is a display transform, wired to a
+        # redraw, so the live value is the one the saved PNG shows.
+        params = pd.DataFrame(
+            [{"parameter": "mode", "value": self.mode_combo.currentText()}]
+            + [{"parameter": key, "value": value} for key, value in self._params.items()
+               if key != "scope"]
+        )
         notes = pd.DataFrame(
             [{"kind": "warning", "text": w} for w in self._result.warnings]
             + [{"kind": "disclosure", "text": d} for d in self._result.disclosures]
@@ -276,9 +307,10 @@ class HeatmapPage(QWidget):
             "heatmap_notes": notes,
         }
         out_dir = export_utils.export_named_tables(
-            self.dataset, f"heatmap_{self.unit_combo.currentText()}", tables,
+            self.dataset, f"heatmap_{self._params.get('basis', '')}", tables,
             context={
-                "attribution": self.attribution_combo.currentText(),
+                "attribution": self._params.get("attribution", ""),
+                "basis": self._params.get("basis", ""),
                 "global_scope": self._result_scope or "(none)",
             },
         )

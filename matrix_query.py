@@ -100,18 +100,24 @@ def engine_matrix(
             f"(showing the top {len(kept)} by {basis})."
         )
 
+    warnings.extend(_unattributable_warning(dataset, basis, query_scope, members))
+
     long_df = members[members["Member"].astype(str).isin(kept)].copy()
     long_df = long_df.rename(columns={"Member": "Element"})
+    # NO fillna: a (tank, element) pair with no measurement must stay
+    # blank, not become a reported 0 kg. The figure paints those cells
+    # "no data"; the table and the exported CSV have to say the same
+    # thing (review finding -- 1,207 of 6,195 real cells asserted a
+    # measurement that does not exist).
     wide_df = (
         long_df.pivot_table(index="WasteSiteId", columns="Element", values=value_col,
                             aggfunc="sum", dropna=False)
         .reindex(columns=kept)
-        .fillna(0.0)
         .reset_index()
     )
     # Order rows by total so the densest tanks read first, matching the
     # legacy builder's presentation.
-    totals = wide_df[kept].sum(axis=1)
+    totals = wide_df[kept].sum(axis=1, skipna=True)
     wide_df = wide_df.assign(_total=totals).sort_values("_total", ascending=False).drop(columns="_total")
 
     return MatrixResult(
@@ -119,6 +125,40 @@ def engine_matrix(
         elements=kept, warnings=warnings, disclosures=list(result.disclosures),
         value_column=value_col,
     )
+
+
+def _unattributable_warning(
+    dataset: HanfordDataset, basis: str, scope: Optional[Dict[str, Sequence[str]]],
+    members: pd.DataFrame,
+) -> List[str]:
+    """Mass in scope that reached NO element. The engine's own
+    unregistered-species warning only sees rows it can parse as compounds,
+    so analytes it cannot resolve at all (Aroclors, ketones, phthalates --
+    515 kg on the shipped dataset, including the entire PCB inventory)
+    were excluded in total silence. Comparing totals catches every cause,
+    including ones nobody has thought of yet."""
+    if basis not in ("kg", "Ci"):
+        return []
+    unit = "kg" if basis == "kg" else "Ci"
+    scoped = apply_scope(dataset.require_df(), scope)
+    reported = float(
+        scoped.filter(pl.col("Units") == unit).get_column("Inventory").sum() or 0.0
+    )
+    value_cols = [c for c in members.columns if c.startswith("Total_")]
+    if not value_cols:
+        return []
+    attributed = float(members[value_cols[0]].sum())
+    missing = reported - attributed
+    # Tolerance guards float noise on sums of ~1e8; anything real is
+    # orders of magnitude above it.
+    if reported <= 0 or missing <= abs(reported) * 1e-12:
+        return []
+    pct = 100.0 * missing / reported
+    return [
+        f"{missing:,.4g} {unit} ({pct:.2g}% of the reported total) is not attributable to any "
+        f"element — analytes whose formula the parser cannot resolve. Those rows are absent "
+        f"from this matrix."
+    ]
 
 
 def legacy_matrix(
@@ -139,14 +179,44 @@ def legacy_matrix(
         value_mode="inventory", tank_subset=tank_subset,
     )
     elements = [c for c in wide_df.columns if c != "WasteSiteId"] if not wide_df.empty else []
+
+    # This path trims and filters exactly like the engine path does, so it
+    # owes the same disclosures -- it used to emit none at all, leaving
+    # the warnings banner, the Notes tab and the export silent together
+    # (review finding).
+    warnings: List[str] = []
+    available = _available_element_count(scoped, unit, min_inventory)
+    if available > len(elements):
+        warnings.append(
+            f"{available - len(elements)} of {available} elements omitted "
+            f"(showing the top {len(elements)} by {unit})."
+        )
+    if min_inventory > 0:
+        warnings.append(
+            f"min inventory {min_inventory:g} {unit}: rows at or below it were dropped "
+            f"before summing, so tank totals exclude them."
+        )
+
     return MatrixResult(
         long_df=long_df, wide_df=wide_df, elements=elements,
-        value_column=f"Inventory_{unit}",
+        value_column=f"Inventory_{unit}", warnings=warnings,
         disclosures=[
             "Each analyte's full mass is booked to its first parsed element "
             "(no stoichiometric split): species constituents other than the first "
             "are not credited, so e.g. SO4 counts entirely as S and not at all as O."
         ],
+    )
+
+
+def _available_element_count(dataset: HanfordDataset, unit: str, min_inventory: float) -> int:
+    df = dataset.require_df()
+    return (
+        df.filter(
+            (pl.col("Units") == unit)
+            & pl.col("Element").is_not_null()
+            & (pl.col("Inventory") > float(min_inventory))
+        )
+        .get_column("Element").n_unique()
     )
 
 

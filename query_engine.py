@@ -532,7 +532,11 @@ def run_query(
         aggs = [
             pl.col("_value").sum().alias(value_col),
             pl.col("WasteSiteId").n_unique().alias("N_tanks"),
-            pl.len().alias("N_rows"),
+            # CONTRIBUTIONS, not dataset rows: one kg row of a species
+            # feeds every element it contains, so a basket spanning S and
+            # O sees a single SO4 row twice. Calling that "N_rows" told
+            # the reader a row count that is not one (review finding).
+            pl.len().alias("N_contributions"),
         ]
         out = frame.group_by(keys).agg(aggs) if keys else frame.select(aggs)
         if basis in ("wt%", "g/L"):
