@@ -29,7 +29,7 @@ import polars as pl
 import matrix_science as msci
 from data_model import HanfordDataset
 from reference_data import SPECIES_ELEMENT_MASS_FRACTIONS
-from query_engine import Basket, apply_scope, run_query
+from query_engine import VALUE_COLUMN_BY_BASIS, Basket, apply_scope, run_query
 
 APPORTIONED = "Apportioned (stoichiometric)"
 AS_REPORTED = "As reported (primary element)"
@@ -167,6 +167,7 @@ def engine_matrix(
         )
 
     warnings.extend(_unattributable_warning(dataset, basis, query_scope, members))
+    warnings.extend(_tank_trim_warning(dataset, scope, tank_subset))
 
     long_df = members[members["Member"].astype(str).isin(kept)].copy()
     long_df = long_df.rename(columns={"Member": "Element"})
@@ -191,6 +192,25 @@ def engine_matrix(
         elements=kept, warnings=warnings, disclosures=list(result.disclosures),
         value_column=value_col,
     )
+
+
+def _tank_trim_warning(
+    dataset: HanfordDataset, scope: Optional[Dict[str, Sequence[str]]],
+    tank_subset: Optional[Sequence[str]],
+) -> List[str]:
+    """The "max tanks" limit dropped rows with no note anywhere, while
+    the parallel element limit warned -- so a 10-of-177 matrix looked
+    like the whole dataset (review finding)."""
+    if tank_subset is None:
+        return []
+    available = (
+        apply_scope(dataset.require_df(), scope).get_column("WasteSiteId").n_unique()
+    )
+    shown = len(set(tank_subset))
+    if available <= shown:
+        return []
+    return [f"{available - shown} of {available} tanks omitted "
+            f"(showing the {shown} highest-inventory tanks)."]
 
 
 def _unattributable_warning(
@@ -244,7 +264,24 @@ def legacy_matrix(
         scoped, unit=unit, top_n_elements=top_n_elements, min_inventory=min_inventory,
         value_mode="inventory", tank_subset=tank_subset,
     )
+    # Name the value column the way the engine names it, so the plot
+    # grammar's unit-honest label applies here too instead of leaking the
+    # internal "Inventory_kg" onto a colorbar (review finding).
+    engine_name = VALUE_COLUMN_BY_BASIS.get(unit)
+    if engine_name:
+        long_df = long_df.rename(columns={f"Inventory_{unit}": engine_name})
+        wide_df = wide_df.rename(columns={f"Inventory_{unit}": engine_name})
     elements = [c for c in wide_df.columns if c != "WasteSiteId"] if not wide_df.empty else []
+    if not wide_df.empty and not long_df.empty:
+        # The legacy builder pivots with fill_value=0.0, so a (tank,
+        # element) pair that was never measured is published as a measured
+        # 0 kg -- the same defect engine_matrix was fixed for, and the
+        # figure beside it paints those cells "no data" (review finding).
+        measured = {(t, e) for t, e in zip(long_df["WasteSiteId"], long_df["Element"])}
+        for element in elements:
+            absent = [t for t in wide_df["WasteSiteId"] if (t, element) not in measured]
+            if absent:
+                wide_df.loc[wide_df["WasteSiteId"].isin(absent), element] = float("nan")
 
     # This path trims and filters exactly like the engine path does, so it
     # owes the same disclosures -- it used to emit none at all, leaving
@@ -265,7 +302,7 @@ def legacy_matrix(
 
     return MatrixResult(
         long_df=long_df, wide_df=wide_df, elements=elements,
-        value_column=f"Inventory_{unit}", warnings=warnings,
+        value_column=VALUE_COLUMN_BY_BASIS.get(unit, f"Inventory_{unit}"), warnings=warnings,
         disclosures=[
             "Each analyte's full mass is booked to its first parsed element "
             "(no stoichiometric split): species constituents other than the first "

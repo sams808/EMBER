@@ -149,7 +149,7 @@ class EmberMainWindow(QMainWindow):
 
         pump = QApplication.processEvents
         self.stack = QStackedWidget()
-        self.overview_page = OverviewPage(self)
+        self.overview_page = OverviewPage(self, scope=self.global_scope)
         self.stack.addWidget(self.overview_page)
         pump()
         self.query_page = QueryPage(self, scope=self.global_scope)

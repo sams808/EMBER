@@ -171,8 +171,13 @@ class TestConcentrationBases:
         assert res.table["g_per_L"].iloc[0] == pytest.approx(100000.0 / 3000.0)  # 3 kL total
 
     def test_concentration_refuses_non_layer_grouping(self):
+        # Isotope is a per-row dimension, so a layer denominator would be
+        # double-counted across it. (Element has its own, earlier refusal:
+        # it labels a subject's apportioned mass with the source row's
+        # element -- see test_recheck_findings.)
         with pytest.raises(ValueError, match="layer-compatible"):
-            run_query(_chem_dataset(), subject=("element", "S"), basis="wt%", group_by=["Element"])
+            run_query(_chem_dataset(), subject=("element", "S"), basis="wt%",
+                      group_by=["Isotope"])
 
 
 class TestWarnings:

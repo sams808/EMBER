@@ -40,7 +40,7 @@ ICRP Publication 107, Ann. ICRP 38(3) (2008).
 from __future__ import annotations
 
 import math
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from elements import parse_isotope, primary_element_from_analyte
 
@@ -155,6 +155,18 @@ NUCLIDE_HALF_LIFE_YEARS: Dict[str, Optional[float]] = {
     "239/240Pu": None,
     "243/244Cm": None,
     "144Ce/Pr": None,
+}
+
+# What each combined-pair label is the sum of. The BBI frequently reports
+# BOTH the pair and its members for the same layer -- in the shipped data
+# every one of the 181 layers carrying 239/240Pu also carries 239Pu and
+# 240Pu, and the pair equals their sum to within 0.5%. Adding all three
+# counts the same activity twice, so a caller must pick one
+# representation; this table is what lets it.
+COMBINED_PAIR_MEMBERS: Dict[str, Tuple[str, ...]] = {
+    "239/240Pu": ("239Pu", "240Pu"),
+    "243/244Cm": ("243Cm", "244Cm"),
+    "144Ce/Pr": ("144Ce", "144Pr"),
 }
 
 # Mass number for the specific-activity molar-mass approximation, parsed

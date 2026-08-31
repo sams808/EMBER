@@ -122,9 +122,13 @@ class TestGlobalScopeWiring:
         window.show()
         qtbot.waitExposed(window)
         try:
+            # Query, Heatmaps and Overview all honor the scope now, so
+            # the bar shows above them; Figure Composer does not.
             window.nav.setCurrentRow(NAV_ITEMS.index(NAV_QUERY))
             assert window.scope_bar.isVisible()
             window.nav.setCurrentRow(NAV_ITEMS.index(NAV_OVERVIEW))
+            assert window.scope_bar.isVisible()
+            window.nav.setCurrentRow(NAV_ITEMS.index("Figure Composer"))
             assert not window.scope_bar.isVisible()
         finally:
             window.hide()

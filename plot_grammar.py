@@ -483,8 +483,13 @@ def _render_heatmap(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
             values = np.where(denom > 0, values / denom, np.nan)
     if spec.log_x:
         # Same non-positive -> NaN policy as every other log view in the
-        # app (matrix_science.log10_safe), not a second local copy.
+        # app (matrix_science.log10_safe), not a second local copy. A
+        # measured zero and a never-measured cell then render identically,
+        # so say how many were lost to the transform (review finding).
+        zeros = int(np.count_nonzero(values == 0.0))
         values = log10_safe(values)
+        if zeros:
+            notes.append(f"{zeros} measured zero(s) cannot be shown on a log scale")
 
     panel.figure.clear()
     n_rows, n_cols = values.shape
@@ -516,6 +521,7 @@ def _render_scatter(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
     pdf = data.copy()
     pdf["_x"] = numeric_plot_series(pdf[spec.x])
     pdf["_y"] = numeric_plot_series(pdf[spec.y])
+    total_points = len(pdf)
     pdf = pdf.dropna(subset=["_x", "_y"])
     if spec.log_x:
         pdf = pdf[pdf["_x"] > 0]
@@ -524,6 +530,10 @@ def _render_scatter(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
     if pdf.empty:
         panel.show_message("No plottable points")
         return
+    if len(pdf) < total_points:
+        # Every other mark discloses this; scatter used to drop silently.
+        notes.append(f"{total_points - len(pdf)} of {total_points} points not plottable "
+                     f"(blank, or non-positive on a log axis)")
 
     ax = panel.reset_axes()
     if spec.hue is None:
@@ -609,18 +619,23 @@ def _render_faceted(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
     per_facet = spec_replace(spec, facet=None, title="", subtitle="")
     trimmed_in_facet = 0
     facet_total = 0
+    unplottable = 0
     for i, level in enumerate(levels):
         ax = axes[i // n_cols][i % n_cols]
         sub = pdf[pdf[spec.facet] == level]
-        drawn, available = _draw_facet_cell(ax, sub, per_facet)
+        drawn, available, dropped = _draw_facet_cell(ax, sub, per_facet)
         trimmed_in_facet = max(trimmed_in_facet, drawn)
         facet_total = max(facet_total, available)
+        unplottable += dropped
         ax.set_title(str(level), fontsize=9)
     if facet_total > trimmed_in_facet:
         # Per-facet trimming was silent before: _draw_facet_cell never
         # received the notes list its own docstring promised to feed
         # (review finding).
         notes.append(f"top {trimmed_in_facet} of {facet_total} {spec.y} per facet")
+    if unplottable:
+        notes.append(f"{unplottable} {spec.y} not plottable "
+                     f"(zero, negative, or blank) across the facets")
     for j in range(len(levels), n_rows * n_cols):
         axes[j // n_cols][j % n_cols].set_axis_off()
     panel.ax = axes[0][0]
@@ -644,9 +659,15 @@ def _draw_facet_cell(ax, sub: pd.DataFrame, spec: PlotSpec) -> Tuple[int, int]:
             ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center",
                     fontsize=8, color="0.5")
             ax.set_axis_off()
-            return (0, 0)
-        totals = pdf.groupby(spec.y, dropna=False)["_val"].sum().sort_values(ascending=False)
+            return (0, 0, 0)
+        # Intensive values (wt%, g/L) each carry their own denominator,
+        # so a facet must not add them any more than the main path does
+        # (review finding: a facet summed 40 + 45 wt% into 85).
+        agg = "max" if spec.intensive else "sum"
+        totals = (pdf.groupby(spec.y, dropna=False)["_val"].agg(agg)
+                  .sort_values(ascending=False))
         available = len(totals)
+        dropped = sub[spec.y].nunique(dropna=False) - available
         grouped = totals.head(_bar_limit(spec)).iloc[::-1]
         ax.barh([str(v) for v in grouped.index], grouped.to_numpy(dtype=float),
                 color=BASE_COLOR if spec.palette == "single" else BAR_COLOR)
@@ -654,7 +675,7 @@ def _draw_facet_cell(ax, sub: pd.DataFrame, spec: PlotSpec) -> Tuple[int, int]:
             ax.set_xscale("log")
         ax.tick_params(labelsize=7)
         ax.grid(True, axis="x", alpha=0.25)
-        return (len(grouped), available)
+        return (len(grouped), available, max(0, dropped))
     else:
         x = numeric_plot_series(sub[spec.x])
         y = numeric_plot_series(sub[spec.y])
@@ -671,4 +692,4 @@ def _draw_facet_cell(ax, sub: pd.DataFrame, spec: PlotSpec) -> Tuple[int, int]:
             ax.set_yscale("log")
         ax.tick_params(labelsize=7)
         ax.grid(True, alpha=0.25)
-        return (int(keep.sum()), int(keep.sum()))  # scatter draws every point
+        return (int(keep.sum()), int(keep.sum()), int((~keep).sum()))

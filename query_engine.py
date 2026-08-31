@@ -45,8 +45,9 @@ import pandas as pd
 import polars as pl
 
 from data_model import HanfordDataset
-from elements import normalize_element_symbol, parse_isotope
+from elements import normalize_element_symbol, parse_isotope, primary_element_from_analyte
 from reference_data import (
+    COMBINED_PAIR_MEMBERS,
     NUCLIDE_HALF_LIFE_YEARS,
     SPECIES_ELEMENT_MASS_FRACTIONS,
     SPECIES_FORMULAS,
@@ -265,46 +266,101 @@ def _element_contributions(df: pl.DataFrame, element: str) -> pl.DataFrame:
             pl.lit(None, dtype=pl.Float64).alias("Ci_value"),
             pl.lit(None, dtype=pl.Utf8).alias("SourceKind"),
             pl.lit(True).alias("MassCounts"),
+            pl.lit(True).alias("ActivityCounts"),
+            pl.lit(element).alias("SubjectElement"),
         ])
-    return _suppress_isotopic_restatement(pl.concat(pieces, how="vertical_relaxed"))
+    return (
+        pl.concat(pieces, how="vertical_relaxed")
+        .with_columns([
+            pl.lit(True).alias("MassCounts"),
+            pl.lit(True).alias("ActivityCounts"),
+            pl.lit(element).alias("SubjectElement"),
+        ])
+    )
 
 
-def _suppress_isotopic_restatement(contrib: pl.DataFrame) -> pl.DataFrame:
-    """Mark Ci rows whose mass is already inside a reported kg mass.
+def _suppress_restatements(contrib: pl.DataFrame) -> pl.DataFrame:
+    """Flag rows that restate material another row already accounts for.
 
-    A mass reported for an ELEMENT includes its radionuclides: the BBI
-    reports UTOTAL (all the uranium there is) and, separately, the
+    The BBI describes the same inventory more than once, and adding any
+    of those descriptions to itself inflates a published number. Two
+    distinct cases, both resolved PER LAYER so a layer reporting only one
+    form keeps it:
+
+    MASS. A mass reported for an element includes its radionuclides: the
+    BBI reports UTOTAL (all the uranium there is) and, separately, the
     activity of 232-238U -- the same metal, stated radiologically. Adding
-    the bridged isotope grams to UTOTAL counts that uranium twice. On the
-    shipped dataset that put 1,354 t of uranium on the front page against
-    the 677 t actually reported, and the per-tank ratio of bridged-isotope
-    mass to UTOTAL mass is 0.9926-1.0050 in all 177 tanks, with
-    235U/UTOTAL = 0.706 wt%: natural uranium, one inventory described two
-    ways (review finding).
+    the bridged isotope grams to UTOTAL put 1,354 t of uranium on the
+    front page against the 677 t reported (per-tank ratio 0.9926-1.0050
+    in all 177 tanks; 235U/UTOTAL = 0.706 wt%, natural uranium). So on a
+    mass basis a layer's Ci rows count only where that layer reports no
+    mass for the SAME SUBJECT ELEMENT -- which is what makes this work for
+    a basket whose members are "U" and "238U", where per-member handling
+    saw no overlap at all.
 
-    So on a MASS basis a layer's Ci rows count only where that layer
-    reports no elemental/species mass for the element. Per LAYER, not per
-    dataset -- a tank reporting only activity still contributes its
-    bridged mass. Activity bases are untouched: summing curies is
-    unaffected by how the mass is reported.
+    ACTIVITY. A combined-pair label is the sum of its members, and the
+    BBI often reports both: every one of the 181 layers carrying
+    239/240Pu also carries 239Pu and 240Pu. Counting all three inflated
+    plutonium activity by 21.5% and curium by 66%. Where a layer reports
+    a pair AND its members, exactly one representation is kept -- the
+    itemised members when they are all present (more informative), the
+    pair otherwise (dropping it would lose the member that is missing).
     """
-    if contrib.is_empty():
-        return contrib.with_columns(pl.lit(True).alias("MassCounts"))
+    if contrib.is_empty() or "SubjectElement" not in contrib.columns:
+        return contrib
     layer = [c for c in _LAYER_KEYS if c in contrib.columns]
     if not layer:
-        return contrib.with_columns(pl.lit(True).alias("MassCounts"))
-    mass_layers = (
-        contrib.filter((pl.col("Units") != "Ci") & pl.col("Mass_g").is_not_null())
-        .select(layer).unique()
+        return contrib
+
+    # ---- mass: a reported mass already includes the nuclides ----
+    key = layer + ["SubjectElement"]
+    mass_here = (
+        contrib.filter(
+            (pl.col("Units") != "Ci")
+            & pl.col("Mass_g").is_not_null()
+            & (pl.col("Mass_g") > 0)  # a reported ZERO is not a mass that includes anything
+        )
+        .select(key).unique()
         .with_columns(pl.lit(True).alias("_mass_here"))
     )
-    return (
-        contrib.join(mass_layers, on=layer, how="left")
+    out = (
+        contrib.join(mass_here, on=key, how="left")
         .with_columns(
             (~((pl.col("Units") == "Ci") & pl.col("_mass_here").fill_null(False)))
             .alias("MassCounts")
         )
         .drop("_mass_here")
+    )
+
+    # ---- activity: a combined pair restates its members ----
+    # Decided PER LAYER: one layer may itemise where the next only gives
+    # the pair, so a dataset-wide verdict would drop real activity.
+    labels = {a for pair, members in COMBINED_PAIR_MEMBERS.items()
+              for a in (pair,) + members}
+    relevant = out.filter(pl.col("Analyte").is_in(sorted(labels)))
+    if relevant.is_empty():
+        return out
+
+    redundant: List[Dict[str, object]] = []
+    for row in relevant.select(layer + ["Analyte"]).unique().group_by(layer).agg(
+            pl.col("Analyte").alias("_analytes")).iter_rows(named=True):
+        here = set(row["_analytes"])
+        for pair, members in COMBINED_PAIR_MEMBERS.items():
+            if pair not in here:
+                continue
+            itemised = [m for m in members if m in here]
+            if not itemised:
+                continue                     # only the pair: it is the representation
+            drop = [pair] if len(itemised) == len(members) else itemised
+            for analyte in drop:
+                redundant.append({**{k: row[k] for k in layer}, "Analyte": analyte,
+                                  "_restates": True})
+    if not redundant:
+        return out
+    return (
+        out.join(pl.DataFrame(redundant), on=layer + ["Analyte"], how="left")
+        .with_columns((~pl.col("_restates").fill_null(False)).alias("ActivityCounts"))
+        .drop("_restates")
     )
 
 
@@ -316,9 +372,9 @@ def _analyte_contributions(df: pl.DataFrame, analyte: str) -> pl.DataFrame:
             pl.lit(None, dtype=pl.Float64).alias("Ci_value"),
             pl.lit(None, dtype=pl.Utf8).alias("SourceKind"),
             pl.lit(True).alias("MassCounts"),
+            pl.lit(True).alias("ActivityCounts"),
+            pl.lit(None, dtype=pl.Utf8).alias("SubjectElement"),
         ])
-    # No suppression here: asking for an analyte asks for THAT analyte's
-    # mass, and one label cannot restate itself.
     return rows.with_columns([
         pl.when(pl.col("Units") == "kg")
           .then(pl.col("Inventory") * 1000.0)
@@ -327,6 +383,10 @@ def _analyte_contributions(df: pl.DataFrame, analyte: str) -> pl.DataFrame:
         pl.when(pl.col("Units") == "Ci").then(pl.col("Inventory")).otherwise(None).alias("Ci_value"),
         (pl.lit("analyte:") + pl.col("Units")).alias("SourceKind"),
         pl.lit(True).alias("MassCounts"),
+        pl.lit(True).alias("ActivityCounts"),
+        # Which element this analyte describes, so a basket mixing "U"
+        # and "238U" is recognised as two views of one inventory.
+        pl.lit(primary_element_from_analyte(analyte)).alias("SubjectElement"),
     ])
 
 
@@ -435,6 +495,16 @@ def run_query(
         )
     if basis not in BASES:
         raise ValueError(f"Unknown basis {basis!r}; expected one of {BASES}")
+    if "Element" in group_by and kind in ("element", "basket"):
+        # The value is the SUBJECT's apportioned mass; the Element column
+        # names the SOURCE ROW's primary element. Grouping oxygen by
+        # Element produced a row labelled "N" holding oxygen's share of
+        # the nitrate -- 3.1x the real nitrogen total (review finding).
+        raise ValueError(
+            "Grouping by Element labels a subject's apportioned mass with the source row's "
+            "own element, which is a different quantity. Group by Analyte to see which "
+            "species carry the subject, or query a single analyte instead."
+        )
     if basis in ("wt%", "g/L"):
         bad = [g for g in group_by if g not in LAYER_COMPATIBLE_DIMS]
         if bad:
@@ -478,6 +548,8 @@ def run_query(
                 pl.lit(None, dtype=pl.Float64).alias("Ci_value"),
                 pl.lit(None, dtype=pl.Utf8).alias("SourceKind"),
                 pl.lit(True).alias("MassCounts"),
+                pl.lit(True).alias("ActivityCounts"),
+                pl.lit(None, dtype=pl.Utf8).alias("SubjectElement"),
                 pl.lit(None, dtype=pl.Utf8).alias("Member"),
             ])
         )
@@ -494,14 +566,27 @@ def run_query(
     else:
         raise ValueError(f"Unknown subject kind {kind!r}")
 
+    # Restatement is resolved ONCE, over the assembled frame: a basket
+    # whose members are "U" and "238U" overlaps ACROSS members, which
+    # per-member handling could never see (review finding).
+    contrib = _suppress_restatements(contrib)
+
     # ---- basis: choose the value column and inclusion rule ----
     if basis == "Ci":
-        included = contrib.filter(pl.col("Ci_value").is_not_null())
+        included = contrib.filter(pl.col("Ci_value").is_not_null() & pl.col("ActivityCounts"))
         value_expr = pl.col("Ci_value")
         value_col = "Total_Ci"
         n_kg_dropped = contrib.filter(pl.col("Ci_value").is_null()).height
         if n_kg_dropped:
             warnings.append(f"{n_kg_dropped} kg-basis row(s) excluded: activity basis carries Ci rows only.")
+        restated = contrib.filter(pl.col("Ci_value").is_not_null() & ~pl.col("ActivityCounts"))
+        if restated.height:
+            labels = sorted(set(restated.get_column("Analyte").to_list()))
+            warnings.append(
+                f"{restated.height} Ci row(s) set aside as restatements ({', '.join(labels)}): "
+                f"a combined-pair label is the sum of its members, and this dataset reports "
+                f"both — counting them together would add the same activity twice."
+            )
     elif basis == "kg":
         included = contrib.filter(pl.col("Units") == "kg")
         value_expr = pl.col("Mass_g") / 1000.0
@@ -561,6 +646,24 @@ def run_query(
                 f"{unregistered.height} kg row(s) of unregistered species excluded from apportionment "
                 f"({excluded_kg:,.4g} kg total): {', '.join(labels)} — add their formulas to "
                 f"reference_data.SPECIES_FORMULAS to include them."
+            )
+        # The warning above only sees analytes the parser resolved into a
+        # formula. Ones it could not resolve AT ALL (Aroclors, ketones,
+        # phthalates) reach no element either, and used to be reported by
+        # nothing -- so the one figure a reader saw understated the
+        # unbooked mass by four orders of magnitude (review finding).
+        unresolvable = df.filter(
+            (pl.col("Units") == "kg")
+            & (pl.col("AnalyteClass") == "unparsed")
+            & (pl.col("Inventory") > 0)
+        )
+        if unresolvable.height:
+            unresolved_kg = float(unresolvable.get_column("Inventory").sum() or 0.0)
+            n_labels = unresolvable.get_column("Analyte").n_unique()
+            warnings.append(
+                f"{unresolvable.height} kg row(s) across {n_labels} analyte(s) the parser "
+                f"cannot resolve to elements ({unresolved_kg:,.4g} kg total) reach no element "
+                f"and are absent from every elemental figure."
             )
 
     ci_rows = included.filter(pl.col("Ci_value").is_not_null()) if basis != "kg" else included.head(0)

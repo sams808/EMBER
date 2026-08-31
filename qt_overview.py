@@ -20,6 +20,7 @@ import tank_science as tsci
 from data_model import HanfordDataset
 from plot_grammar import PlotSpec, render_plot
 from qt_help import make_help_button
+from qt_scope import GlobalScope
 from qt_widgets import DataFrameTableView, PlotWidget
 from query_engine import BASES
 
@@ -44,9 +45,11 @@ def _element_basis(unit: str) -> Optional[str]:
 
 
 class OverviewPage(QWidget):
-    def __init__(self, app_window, parent: Optional[QWidget] = None):
+    def __init__(self, app_window, scope: Optional[GlobalScope] = None,
+                 parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.app_window = app_window
+        self.scope = scope if scope is not None else GlobalScope(self)
         self.dataset: Optional[HanfordDataset] = None
         self._element_totals = mq.ElementTotals()
         self._farm_rollup_df = pd.DataFrame()
@@ -154,7 +157,8 @@ class OverviewPage(QWidget):
                 f"are unaffected."
             ])
         else:
-            element_totals = mq.element_totals(self.dataset, basis=basis, top_n=top_n)
+            element_totals = mq.element_totals(self.dataset, basis=basis, top_n=top_n,
+                                               scope=self.scope.as_scope())
         self._element_totals = element_totals
         self._table_views["Top elements"].set_dataframe(element_totals.table)
         self._table_views["Top analytes"].set_dataframe(ov.top_analytes(self.dataset, unit=unit, top_n=top_n))
@@ -193,6 +197,13 @@ class OverviewPage(QWidget):
         if announce:
             self.app_window.statusBar().showMessage(f"Overview refreshed ({unit}, top {top_n}).")
 
+    def on_scope_changed(self) -> None:
+        """Element totals are scoped, so this page must follow the scope
+        bar or it contradicts Query and Heatmaps about the same element
+        (review finding: Na read 46.2 Mkg here against 6.2 Mkg there)."""
+        if self.dataset is not None and self.dataset.is_loaded():
+            self.refresh(announce=False)
+
     def _farm_rollup_unit(self) -> Optional[str]:
         """Farm rollup needs one concrete unit (kg and Ci can't be summed
         together) -- honor an explicit kg/Ci choice, otherwise default to
@@ -225,10 +236,17 @@ class OverviewPage(QWidget):
             if totals.table.empty:
                 self.plot.show_message("No element totals for this dataset.")
                 return
+            subtitle = ["Apportioned (stoichiometric)"]
+            if self.scope.summary():
+                subtitle.append(f"Scope: {self.scope.summary()}")
+            # Trims and exclusions belong ON the figure: the exported PNG
+            # is what ends up in a report, and it carried no trace of a
+            # top-N cut (review finding).
+            subtitle.extend(w for w in totals.warnings if "omitted" in w)
             render_plot(self.plot, totals.table, PlotSpec(
                 mark="bar", x=totals.value_column, y="Element",
                 title="Top elements by inventory",
-                subtitle="Apportioned (stoichiometric)",
+                subtitle=" · ".join(subtitle),
                 log_x=True, top_n=len(totals.table),
             ))
 
@@ -238,10 +256,25 @@ class OverviewPage(QWidget):
             return
         # Hand the bundle the SAME element totals the page is showing, or
         # the archive and the screen disagree about what the waste holds.
+        # A file named "_all" must not hold the on-screen top N, and the
+        # bundle must carry the warnings that qualify its own numbers
+        # (review finding).
+        basis = _element_basis(self.unit_combo.currentText() or "All")
+        untrimmed = (
+            mq.element_totals(self.dataset, basis=basis, top_n=10_000,
+                              scope=self.scope.as_scope())
+            if basis else self._element_totals
+        )
+        notes = pd.DataFrame(
+            [{"kind": "warning", "text": w} for w in untrimmed.warnings]
+            + [{"kind": "disclosure", "text": d} for d in untrimmed.disclosures]
+        )
         out_dir = ov.export_global_debug_bundle(
             self.dataset, extra_info=self._app_extra_info(),
-            extra_tables={"top_elements_all": self._element_totals.table}
-            if not self._element_totals.table.empty else None,
+            extra_tables={
+                "top_elements_all": untrimmed.table if not untrimmed.table.empty else None,
+                "notes": notes if not notes.empty else None,
+            },
         )
         QMessageBox.information(self, "Export complete", f"Debug bundle written to:\n{out_dir}")
 

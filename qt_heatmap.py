@@ -274,6 +274,9 @@ class HeatmapPage(QWidget):
         subtitle_parts = [p for p in [attribution] if p]
         if self._result_scope:
             subtitle_parts.append(f"Scope: {self._result_scope}")
+        # Trims belong on the figure, not only in the banner: the exported
+        # PNG is what ends up in a report (review finding).
+        subtitle_parts.extend(w for w in result.warnings if "omitted" in w)
         spec = PlotSpec(
             mark="heatmap", x=result.value_column, y="WasteSiteId", hue="Element",
             title=f"Tank × element — {self._params.get('basis', '')}",
