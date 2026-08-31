@@ -48,7 +48,8 @@ TEMPLATES: List[QueryTemplate] = [
     QueryTemplate(
         key="uranium_grams_per_tank",
         question="How much uranium is in each tank, in grams?",
-        explanation="UTOTAL kg plus every U isotope bridged from Ci via ICRP-107 — one mass axis.",
+        explanation="Reported uranium mass; where a layer gives only isotope activity, "
+                    "that is bridged to grams via ICRP-107 rather than left out.",
         subject_kind="element", subject="U", basis="g",
         group_by=("WasteSiteId",),
     ),

@@ -70,6 +70,31 @@ class TestMassConservation:
         )
         assert apportioned == pytest.approx(expected, rel=1e-9)
 
+    def test_bridging_never_doubles_an_element_reported_both_ways(self, real_dataset):
+        """A mass reported for an element already includes its
+        radionuclides. Bridging curies to grams may only ADD where a layer
+        reports activity and no mass, so the g-basis total can sit a little
+        above the kg total, never near double it.
+
+        Measured on the shipped dataset after the fix: U 1.0007, Th 1.0005
+        (both were 1.999 and 2.003 when the bridged isotopes were being
+        added to UTOTAL), Sr/Zr/Ni/C/H 1.0000. Samarium is the high end at
+        1.093 because more of its layers report 151Sm activity without a
+        bulk Sm mass -- that excess is real information, not a restatement.
+        """
+        both_ways = ["U", "Th", "Sm", "Sn", "Sr", "Zr", "Ni", "Se", "C", "H"]
+        for element in both_ways:
+            as_kg = run_query(real_dataset, subject=("element", element), basis="kg")
+            as_g = run_query(real_dataset, subject=("element", element), basis="g")
+            kg_total = float(as_kg.table["Total_kg"].sum())
+            if kg_total <= 0:
+                continue
+            ratio = (float(as_g.table["Total_g"].sum()) / 1000.0) / kg_total
+            assert ratio < 1.25, (
+                f"{element}: g basis is {ratio:.3f}x the reported mass -- "
+                f"its nuclides are being counted on top of the bulk measurement"
+            )
+
     def test_species_provenance_split_sums_to_the_element_total(self, real_dataset):
         """Grouping an element subject by Analyte answers "which species
         carry it"; those shares must add back up to the ungrouped total,

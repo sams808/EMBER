@@ -57,6 +57,13 @@ class TestOverviewPage:
         qtbot.wait(20)
         assert page._element_totals.basis == "g"
         assert page._element_totals.value_column == "Total_g"
+        # Assert a BRIDGED NUMBER, not just the basis string: the fixture's
+        # caesium exists only as 100 + 200 Ci of 137Cs, so its appearance
+        # here at the ICRP-107 mass is the only proof the bridge ran.
+        import reference_data as rd
+        totals = page._element_totals.table.set_index("Element")
+        assert totals.loc["Cs", "Total_g"] == pytest.approx(
+            300.0 * rd.nuclide_grams_per_ci("137Cs"))
 
     def test_top_elements_are_apportioned_not_first_element(self, qtbot):
         # The whole point of the migration: this page must agree with

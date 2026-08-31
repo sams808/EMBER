@@ -98,6 +98,11 @@ class ComposerCellPanel:
         # an error placeholder, not the plot, and post-render text overrides
         # must NOT be applied to it (the full pipeline skips them too).
         self.render_failed = False
+        # Whether this panel's TITLE lives on the subfigure suptitle
+        # rather than the axes (grammar-rendered panels put a disclosure
+        # line on the axes title instead). Set by _render_item from what
+        # the recipe actually drew; read by set_panel_title.
+        self.title_on_suptitle = False
         # Recorded, not acted on, when wrapping a SubFigure (see
         # set_figure_size_inches below) -- compose_figure() reads this back
         # from a throwaway pre-measurement pass so a content-heavy panel
@@ -150,12 +155,32 @@ def _render_item(cell: ComposerCellPanel, item) -> None:
     ax = cell.ax
     if ax is None:
         return
+    # Which slot holds THIS panel's title, decided by what the recipe just
+    # drew. A grammar-rendered panel puts its title on the subfigure's
+    # suptitle and its disclosure line on the axes title, so a title
+    # override aimed blindly at the axes would erase the disclosures and
+    # leave the heading standing (review finding).
+    cell.title_on_suptitle = _has_suptitle(cell)
     if item.title_override is not None:
-        ax.set_title(item.title_override)
+        set_panel_title(cell, item.title_override)
     if item.xlabel_override is not None:
         ax.set_xlabel(item.xlabel_override)
     if item.ylabel_override is not None:
         ax.set_ylabel(item.ylabel_override)
+
+
+def _has_suptitle(cell) -> bool:
+    figure = getattr(cell, "figure", None)
+    suptitle = getattr(figure, "_suptitle", None) if figure is not None else None
+    return bool(suptitle is not None and suptitle.get_text())
+
+
+def set_panel_title(cell, value: str) -> None:
+    """Write a panel's title into whichever slot that panel uses."""
+    if getattr(cell, "title_on_suptitle", False) and getattr(cell, "figure", None) is not None:
+        cell.figure.suptitle(value)
+    elif cell.ax is not None:
+        cell.ax.set_title(value)
 
 
 # Measurement results, ONE entry per uid, each remembering the kwarg-
@@ -297,7 +322,7 @@ def apply_text_override(panel, composed: ComposedPanels, index: int, item, field
         return False
     ax = cell.ax
     if fieldname == "title":
-        ax.set_title(value)
+        set_panel_title(cell, value)
     elif fieldname == "xlabel":
         ax.set_xlabel(value)
     elif fieldname == "ylabel":

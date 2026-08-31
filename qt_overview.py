@@ -21,6 +21,7 @@ from data_model import HanfordDataset
 from plot_grammar import PlotSpec, render_plot
 from qt_help import make_help_button
 from qt_widgets import DataFrameTableView, PlotWidget
+from query_engine import BASES
 
 PLOT_TYPES = ["Top elements by inventory", "Farm rollup by inventory"]
 
@@ -31,8 +32,15 @@ PLOT_TYPES = ["Top elements by inventory", "Farm rollup by inventory"]
 _ELEMENT_BASIS = {"All": "g"}
 
 
-def _element_basis(unit: str) -> str:
-    return _ELEMENT_BASIS.get(unit, unit)
+def _element_basis(unit: str) -> Optional[str]:
+    """The engine basis for a Unit-combo entry, or None when the dataset
+    reports in a unit the engine has no mass/activity semantics for. The
+    combo is filled from the data, so a CSV using "MT" or "gal" is
+    entirely possible -- passing it through as a basis raised straight out
+    of refresh() and, since Overview is refreshed first, aborted the
+    shell's whole dataset broadcast (review finding)."""
+    basis = _ELEMENT_BASIS.get(unit, unit)
+    return basis if basis in BASES else None
 
 
 class OverviewPage(QWidget):
@@ -82,6 +90,12 @@ class OverviewPage(QWidget):
         controls.addWidget(export_btn)
         root.addLayout(controls)
 
+        self.warnings_label = QLabel("")
+        self.warnings_label.setWordWrap(True)
+        self.warnings_label.setObjectName("WarningNote")
+        self.warnings_label.setVisible(False)
+        root.addWidget(self.warnings_label)
+
         splitter = QSplitter()
         root.addWidget(splitter, 1)
 
@@ -91,6 +105,7 @@ class OverviewPage(QWidget):
             ("Overview", None), ("Units", None), ("Top elements", None),
             ("Top analytes", None), ("Waste phases", None), ("Waste types", None),
             ("Tank farms", None), ("Missing", None), ("Raw preview", 250),
+            ("Notes", 200),
         ]:
             view = DataFrameTableView(title=title, max_rows_display=max_rows)
             self._table_views[title] = view
@@ -131,8 +146,15 @@ class OverviewPage(QWidget):
         # its stoichiometric share of every species reporting it, and
         # "All" means kg and Ci bridged onto one mass axis rather than
         # ranked against each other.
-        element_totals = mq.element_totals(
-            self.dataset, basis=_element_basis(unit), top_n=top_n)
+        basis = _element_basis(unit)
+        if basis is None:
+            element_totals = mq.ElementTotals(warnings=[
+                f"Element totals need a mass or activity basis; this dataset reports in "
+                f"{unit!r}, which the engine has no chemistry for. The audit tables below "
+                f"are unaffected."
+            ])
+        else:
+            element_totals = mq.element_totals(self.dataset, basis=basis, top_n=top_n)
         self._element_totals = element_totals
         self._table_views["Top elements"].set_dataframe(element_totals.table)
         self._table_views["Top analytes"].set_dataframe(ov.top_analytes(self.dataset, unit=unit, top_n=top_n))
@@ -151,6 +173,22 @@ class OverviewPage(QWidget):
         # have changed since the last Refresh (a "(kg)" title over Ci bars
         # is a silently wrong chart).
         self._farm_rollup_unit_used = farm_unit
+
+        # The engine's warnings and disclosures belong ON the page: this
+        # is the first screen anyone sees, and its headline table now
+        # carries exclusions (trims, unattributable mass, isotopic
+        # restatements) that were being computed and discarded.
+        notes = pd.DataFrame(
+            [{"kind": "warning", "text": w} for w in element_totals.warnings]
+            + [{"kind": "disclosure", "text": d} for d in element_totals.disclosures]
+        )
+        self._table_views["Notes"].set_dataframe(notes)
+        if element_totals.warnings:
+            self.warnings_label.setText("⚠ " + "  •  ".join(element_totals.warnings))
+            self.warnings_label.setVisible(True)
+        else:
+            self.warnings_label.setVisible(False)
+
         self._update_plot()
         if announce:
             self.app_window.statusBar().showMessage(f"Overview refreshed ({unit}, top {top_n}).")
@@ -198,7 +236,13 @@ class OverviewPage(QWidget):
         if self.dataset is None or not self.dataset.is_loaded():
             QMessageBox.information(self, "Export", "Load a dataset first.")
             return
-        out_dir = ov.export_global_debug_bundle(self.dataset, extra_info=self._app_extra_info())
+        # Hand the bundle the SAME element totals the page is showing, or
+        # the archive and the screen disagree about what the waste holds.
+        out_dir = ov.export_global_debug_bundle(
+            self.dataset, extra_info=self._app_extra_info(),
+            extra_tables={"top_elements_all": self._element_totals.table}
+            if not self._element_totals.table.empty else None,
+        )
         QMessageBox.information(self, "Export complete", f"Debug bundle written to:\n{out_dir}")
 
     def _app_extra_info(self) -> dict:

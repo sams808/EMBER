@@ -165,9 +165,18 @@ def environment_report() -> pd.DataFrame:
     }])
 
 
-def export_global_debug_bundle(dataset: HanfordDataset, extra_info: Optional[dict] = None) -> Path:
+def export_global_debug_bundle(
+    dataset: HanfordDataset, extra_info: Optional[dict] = None,
+    extra_tables: Optional[dict] = None,
+) -> Path:
     """Write a timestamped folder of small audit CSVs -- send this instead
-    of the full source CSV when something needs debugging."""
+    of the full source CSV when something needs debugging.
+
+    `extra_tables` ({name: DataFrame}) is written last and OVERWRITES a
+    same-named audit, so the caller can hand the bundle the same numbers
+    the screen is showing rather than a second, differently-computed set
+    (review finding: the bundle exported a first-element-attributed
+    top-elements table contradicting the apportioned one on the page)."""
     from datetime import datetime
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -183,6 +192,9 @@ def export_global_debug_bundle(dataset: HanfordDataset, extra_info: Optional[dic
     top_elements(dataset, unit=None, top_n=200).to_csv(out_dir / "top_elements_all.csv", index=False)
     top_analytes(dataset, unit=None, top_n=300).to_csv(out_dir / "top_analytes_all.csv", index=False)
     dataset.raw_preview(500).to_csv(out_dir / "raw_preview.csv", index=False)
+    for name, table in (extra_tables or {}).items():
+        if table is not None:
+            table.to_csv(out_dir / f"{name}.csv", index=False)
 
     env = environment_report()
     for key, value in (extra_info or {}).items():

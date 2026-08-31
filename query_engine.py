@@ -264,8 +264,48 @@ def _element_contributions(df: pl.DataFrame, element: str) -> pl.DataFrame:
             pl.lit(None, dtype=pl.Float64).alias("Mass_g"),
             pl.lit(None, dtype=pl.Float64).alias("Ci_value"),
             pl.lit(None, dtype=pl.Utf8).alias("SourceKind"),
+            pl.lit(True).alias("MassCounts"),
         ])
-    return pl.concat(pieces, how="vertical_relaxed")
+    return _suppress_isotopic_restatement(pl.concat(pieces, how="vertical_relaxed"))
+
+
+def _suppress_isotopic_restatement(contrib: pl.DataFrame) -> pl.DataFrame:
+    """Mark Ci rows whose mass is already inside a reported kg mass.
+
+    A mass reported for an ELEMENT includes its radionuclides: the BBI
+    reports UTOTAL (all the uranium there is) and, separately, the
+    activity of 232-238U -- the same metal, stated radiologically. Adding
+    the bridged isotope grams to UTOTAL counts that uranium twice. On the
+    shipped dataset that put 1,354 t of uranium on the front page against
+    the 677 t actually reported, and the per-tank ratio of bridged-isotope
+    mass to UTOTAL mass is 0.9926-1.0050 in all 177 tanks, with
+    235U/UTOTAL = 0.706 wt%: natural uranium, one inventory described two
+    ways (review finding).
+
+    So on a MASS basis a layer's Ci rows count only where that layer
+    reports no elemental/species mass for the element. Per LAYER, not per
+    dataset -- a tank reporting only activity still contributes its
+    bridged mass. Activity bases are untouched: summing curies is
+    unaffected by how the mass is reported.
+    """
+    if contrib.is_empty():
+        return contrib.with_columns(pl.lit(True).alias("MassCounts"))
+    layer = [c for c in _LAYER_KEYS if c in contrib.columns]
+    if not layer:
+        return contrib.with_columns(pl.lit(True).alias("MassCounts"))
+    mass_layers = (
+        contrib.filter((pl.col("Units") != "Ci") & pl.col("Mass_g").is_not_null())
+        .select(layer).unique()
+        .with_columns(pl.lit(True).alias("_mass_here"))
+    )
+    return (
+        contrib.join(mass_layers, on=layer, how="left")
+        .with_columns(
+            (~((pl.col("Units") == "Ci") & pl.col("_mass_here").fill_null(False)))
+            .alias("MassCounts")
+        )
+        .drop("_mass_here")
+    )
 
 
 def _analyte_contributions(df: pl.DataFrame, analyte: str) -> pl.DataFrame:
@@ -275,7 +315,10 @@ def _analyte_contributions(df: pl.DataFrame, analyte: str) -> pl.DataFrame:
             pl.lit(None, dtype=pl.Float64).alias("Mass_g"),
             pl.lit(None, dtype=pl.Float64).alias("Ci_value"),
             pl.lit(None, dtype=pl.Utf8).alias("SourceKind"),
+            pl.lit(True).alias("MassCounts"),
         ])
+    # No suppression here: asking for an analyte asks for THAT analyte's
+    # mass, and one label cannot restate itself.
     return rows.with_columns([
         pl.when(pl.col("Units") == "kg")
           .then(pl.col("Inventory") * 1000.0)
@@ -283,6 +326,7 @@ def _analyte_contributions(df: pl.DataFrame, analyte: str) -> pl.DataFrame:
           .alias("Mass_g"),
         pl.when(pl.col("Units") == "Ci").then(pl.col("Inventory")).otherwise(None).alias("Ci_value"),
         (pl.lit("analyte:") + pl.col("Units")).alias("SourceKind"),
+        pl.lit(True).alias("MassCounts"),
     ])
 
 
@@ -433,6 +477,7 @@ def run_query(
                 pl.lit(None, dtype=pl.Float64).alias("Mass_g"),
                 pl.lit(None, dtype=pl.Float64).alias("Ci_value"),
                 pl.lit(None, dtype=pl.Utf8).alias("SourceKind"),
+                pl.lit(True).alias("MassCounts"),
                 pl.lit(None, dtype=pl.Utf8).alias("Member"),
             ])
         )
@@ -467,9 +512,18 @@ def run_query(
                 f"{n_ci_dropped} Ci-basis row(s) excluded under the kg basis; use basis 'g' to bridge them."
             )
     else:  # g, wt%, g/L -- mass-based
-        included = contrib.filter(pl.col("Mass_g").is_not_null())
+        included = contrib.filter(pl.col("Mass_g").is_not_null() & pl.col("MassCounts"))
         value_expr = pl.col("Mass_g")
         value_col = {"g": "Total_g", "wt%": "wt_pct", "g/L": "g_per_L"}[basis]
+        restated = contrib.filter(~pl.col("MassCounts"))
+        if restated.height:
+            labels = sorted(set(restated.get_column("Analyte").to_list()))
+            shown = ", ".join(labels[:6]) + (" …" if len(labels) > 6 else "")
+            warnings.append(
+                f"{restated.height} Ci row(s) set aside on the mass basis ({shown}): a reported "
+                f"elemental mass already includes its radionuclides, so adding the bridged grams "
+                f"would count the same material twice."
+            )
         dropped = contrib.filter(pl.col("Mass_g").is_null() & (pl.col("Units") == "Ci"))
         if dropped.height:
             labels = sorted(set(dropped.get_column("Analyte").to_list()))
