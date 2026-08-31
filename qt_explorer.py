@@ -16,13 +16,26 @@ from PySide6.QtWidgets import (
 )
 
 import element_science as esci
+import explorer_query as eqy
 import export_utils
 import plot_helpers as ph
 from data_model import HanfordDataset
 from qt_help import make_help_button
+from qt_scope import GlobalScope
 from qt_widgets import CollapsibleSection, DataFrameTableView, PlotWidget
 
 MODES = ["auto", "element", "analyte_exact", "analyte_contains", "regex"]
+
+# The Unit picker offers "All" plus whatever the data reports. For the
+# engine-backed Target views that maps onto the bridged mass basis rather
+# than ranking kilograms against curies, which compares nothing.
+_ENGINE_BASIS = {"All": "g"}
+
+
+def _engine_basis(unit: str) -> str:
+    from query_engine import BASES
+    basis = _ENGINE_BASIS.get(unit, unit)
+    return basis if basis in BASES else "g"
 
 
 def _unit_suffix(df: Optional[pd.DataFrame]) -> str:
@@ -47,9 +60,12 @@ PLOT_TYPES = [
 
 
 class ExplorerPage(QWidget):
-    def __init__(self, app_window, parent: Optional[QWidget] = None):
+    def __init__(self, app_window, scope: Optional[GlobalScope] = None,
+                 parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.app_window = app_window
+        self.scope = scope if scope is not None else GlobalScope(self)
+        self._resolved = None
         self.dataset: Optional[HanfordDataset] = None
         self._last_query: Optional[str] = None
         self._results: dict = {}
@@ -125,6 +141,12 @@ class ExplorerPage(QWidget):
         adv.addLayout(adv_row)
         root.addWidget(self.advanced_section)
 
+        self.warnings_label = QLabel("")
+        self.warnings_label.setWordWrap(True)
+        self.warnings_label.setObjectName("WarningNote")
+        self.warnings_label.setVisible(False)
+        root.addWidget(self.warnings_label)
+
         splitter = QSplitter()
         root.addWidget(splitter, 1)
 
@@ -135,6 +157,7 @@ class ExplorerPage(QWidget):
             ("Co-elements", None), ("Co-analytes", None),
             ("Composition (absolute)", None), ("Composition (fraction)", None),
             ("Composition (by tank)", None), ("Raw target rows", 500),
+            ("Notes", 200),
         ]:
             view = DataFrameTableView(title=title, max_rows_display=max_rows)
             self._table_views[title] = view
@@ -177,6 +200,10 @@ class ExplorerPage(QWidget):
         if not ask(kind, subject):
             QMessageBox.information(self, "Element Explorer", "The Query workspace isn't available.")
 
+    def on_scope_changed(self) -> None:
+        if self._results:
+            self.run_search()
+
     def on_dataset_changed(self, dataset: HanfordDataset) -> None:
         self.dataset = dataset
         current_unit = self.unit_combo.currentText()
@@ -189,6 +216,8 @@ class ExplorerPage(QWidget):
         self.unit_combo.setCurrentIndex(restore_index if restore_index >= 0 else 0)
         self.unit_combo.blockSignals(False)
         self._results = {}
+        self._resolved = None
+        self.warnings_label.setVisible(False)
         for view in self._table_views.values():
             view.set_dataframe(view.dataframe().iloc[0:0])
         self.plot.show_message("Run a search to see results.")
@@ -206,42 +235,73 @@ class ExplorerPage(QWidget):
         min_target = self.min_target_spin.value()
         min_context = self.min_context_spin.value()
 
+        # The QUANTITATIVE views come from the query engine, so this page
+        # agrees with Query, Heatmaps and Overview: an element receives its
+        # stoichiometric share of every species reporting it instead of the
+        # full mass of every analyte whose formula mentions it (searching
+        # "S" used to book all of every sulfate row, and searching "O"
+        # booked the same sulfate again).
+        scope = self.scope.as_scope()
+        resolved = eqy.resolve_subject(self.dataset, query, mode)
+        if not resolved.ok:
+            QMessageBox.information(self, "Element Explorer", resolved.error)
+            return
+        basis = _engine_basis(unit)
+        engine = eqy.target_tables(self.dataset, resolved, basis=basis, scope=scope)
+        self._resolved = resolved
+
         try:
-            target_by_tank = esci.target_by_tank_unit(self.dataset, query, mode, unit, min_target)
-            target_by_phase = esci.target_by_phase(self.dataset, query, mode, unit, min_target)
-            target_by_type = esci.target_by_type(self.dataset, query, mode, unit, min_target)
             co_el = esci.co_elements(self.dataset, query, mode, unit, min_target, min_context)
             co_an = esci.co_analytes(self.dataset, query, mode, unit, min_target, min_context)
             abs_stats, frac_stats, tank_stats = esci.composition_stats(self.dataset, query, mode, unit, min_target, min_context)
-            raw_rows, resolved_mode, symbol = esci.target_rows(self.dataset, query, mode, unit, min_target)
         except ValueError as exc:
             QMessageBox.warning(self, "Search failed", str(exc))
             return
 
+        target_by_tank = engine.tables.get("Target by tank", pd.DataFrame())
         self._results = {
-            "Target by tank": target_by_tank, "Target by phase": target_by_phase,
-            "Target by type": target_by_type, "Co-elements": co_el, "Co-analytes": co_an,
+            "Target by tank": target_by_tank,
+            "Target by phase": engine.tables.get("Target by phase", pd.DataFrame()),
+            "Target by type": engine.tables.get("Target by type", pd.DataFrame()),
+            "Co-elements": co_el, "Co-analytes": co_an,
             "Composition (absolute)": abs_stats, "Composition (fraction)": frac_stats,
             "Composition (by tank)": tank_stats,
         }
-        self._table_views["Target by tank"].set_dataframe(target_by_tank)
-        self._table_views["Target by phase"].set_dataframe(target_by_phase)
-        self._table_views["Target by type"].set_dataframe(target_by_type)
+        for name in ("Target by tank", "Target by phase", "Target by type"):
+            self._table_views[name].set_dataframe(engine.tables.get(name, pd.DataFrame()))
         self._table_views["Co-elements"].set_dataframe(co_el)
         self._table_views["Co-analytes"].set_dataframe(co_an)
         self._table_views["Composition (absolute)"].set_dataframe(abs_stats)
         self._table_views["Composition (fraction)"].set_dataframe(frac_stats)
         self._table_views["Composition (by tank)"].set_dataframe(tank_stats)
-        self._table_views["Raw target rows"].set_dataframe(raw_rows.to_pandas())
+        self._table_views["Raw target rows"].set_dataframe(
+            eqy.raw_target_rows(self.dataset, resolved, scope=scope))
 
+        notes = pd.DataFrame(
+            [{"kind": "warning", "text": w} for w in engine.warnings]
+            + [{"kind": "disclosure", "text": d} for d in engine.disclosures]
+            + [{"kind": "disclosure", "text":
+                "Co-elements, Co-analytes and the Composition tabs count reported rows "
+                "as they are (each analyte's full mass under its first parsed element). "
+                "The Target tabs above are apportioned."}]
+        )
+        self._table_views["Notes"].set_dataframe(notes)
+        if engine.warnings:
+            self.warnings_label.setText("⚠ " + "  •  ".join(engine.warnings))
+            self.warnings_label.setVisible(True)
+        else:
+            self.warnings_label.setVisible(False)
+
+        self._engine_value_column = engine.value_column
         self._last_query = query
-        self._symbol = symbol
+        self._symbol = resolved.label
         self._update_plot()
 
         n_tanks = target_by_tank["WasteSiteId"].nunique() if not target_by_tank.empty else 0
+        scope_note = f", scope: {self.scope.summary()}" if self.scope.is_active() else ""
         self.app_window.statusBar().showMessage(
-            f"'{query}' ({resolved_mode}{' -> ' + symbol if symbol else ''}): {n_tanks} tank(s), "
-            f"{raw_rows.height} matching row(s)."
+            f"'{query}' -> {resolved.label} ({resolved.kind}, {basis}): "
+            f"{n_tanks} tank(s){scope_note}."
         )
 
     def _update_plot(self) -> None:
@@ -256,9 +316,10 @@ class ExplorerPage(QWidget):
         abs_stats = self._results.get("Composition (absolute)")
         frac_stats = self._results.get("Composition (fraction)")
 
+        value_col = getattr(self, "_engine_value_column", "") or "Total_g"
         if plot_type == "Target inventory by tank":
             xlabel = (f"Target inventory: {symbol}" if symbol else "Target inventory") + _unit_suffix(target_by_tank)
-            ph.plot_barh(self.plot, target_by_tank, "WasteSiteId", "Target_Inventory_sum",
+            ph.plot_barh(self.plot, target_by_tank, "WasteSiteId", value_col,
                          "Target inventory by tank", xlabel, top_n=self.top_n_spin.value(),
                          highlighted_label=symbol, log_x=True)
         elif plot_type in ("Target by waste phase", "Target by waste type"):
@@ -274,15 +335,20 @@ class ExplorerPage(QWidget):
                 "Target by waste type": (target_by_type, "WasteType", "Target inventory by waste type"),
             }[plot_type]
             xlabel = (f"Target inventory: {symbol}" if symbol else "Target inventory") + _unit_suffix(df)
-            ph.plot_barh(self.plot, df, label_col, "Target_Inventory_sum",
+            ph.plot_barh(self.plot, df, label_col, value_col,
                          title, xlabel, top_n=self.top_n_spin.value(), log_x=True)
         elif plot_type == "Target fraction by tank":
             xlabel = f"Fraction of tank total: {symbol}" if symbol else "Fraction"
-            ph.plot_barh(self.plot, target_by_tank, "WasteSiteId", "TargetFractionOfTankUnitInventory",
-                         "Target fraction of tank total", xlabel, top_n=self.top_n_spin.value(),
-                         highlighted_label=symbol)
+            ph.plot_barh(self.plot, target_by_tank, "WasteSiteId", "Fraction_of_tank",
+                         "Target share of the tank's attributed total", xlabel,
+                         top_n=self.top_n_spin.value(), highlighted_label=symbol)
         elif plot_type == "Target vs total inventory":
-            ph.plot_target_vs_total(self.plot, target_by_tank, "Target vs total tank inventory")
+            from plot_grammar import PlotSpec, render_plot
+            render_plot(self.plot, target_by_tank, PlotSpec(
+                mark="scatter", x="Context_total", y=value_col,
+                title="Target vs the tank's attributed total",
+                xlabel="Tank total (all elements)", ylabel=f"{symbol or 'Target'}",
+                log_x=True, log_y=True))
         elif plot_type == "Co-elements inventory":
             xlabel = "Total inventory" + _unit_suffix(co_el) + (f", tanks containing {symbol}" if symbol else "")
             ph.plot_barh(self.plot, co_el, "Element", "Total_inventory_in_target_tanks",

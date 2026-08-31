@@ -179,10 +179,36 @@ def target_tables(
         if name == "Target by tank":
             out.member_table = result.member_table
             out.disclosures = list(result.disclosures)
+    # Per-tank context: the subject's share of everything the engine can
+    # attribute in that tank, on the same basis. The legacy version divided
+    # by the tank's summed REPORTED inventory, which is a different (and
+    # unit-mixed) denominator; this one is consistent with the numerator.
+    context = run_query(dataset, subject=("basket", _all_elements_basket(dataset)),
+                        basis=basis, group_by=["WasteSiteId"], scope=scope)
+    tank_table = out.tables.get("Target by tank")
+    if tank_table is not None and not tank_table.empty and not context.table.empty:
+        totals = context.table.set_index("WasteSiteId")[out.value_column]
+        tank_table = tank_table.copy()
+        tank_table["Context_total"] = tank_table["WasteSiteId"].map(totals)
+        tank_table["Fraction_of_tank"] = (
+            tank_table[out.value_column] / tank_table["Context_total"]
+        ).where(tank_table["Context_total"] > 0)
+        out.tables["Target by tank"] = tank_table
+
     out.warnings = seen_warnings
     if resolved.note:
         out.disclosures.insert(0, f"{resolved.label}: {resolved.note}.")
+    out.disclosures.append(
+        "Fraction_of_tank is the subject's share of everything the engine can attribute "
+        "in that tank on the same basis, not a wt% of the physical waste (use the Query "
+        "workspace's wt% basis for that)."
+    )
     return out
+
+
+def _all_elements_basket(dataset: HanfordDataset) -> Basket:
+    from matrix_query import candidate_elements
+    return Basket("All elements", tuple(candidate_elements(dataset)), "context total")
 
 
 def raw_target_rows(

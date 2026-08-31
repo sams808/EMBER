@@ -155,7 +155,7 @@ class EmberMainWindow(QMainWindow):
         self.query_page = QueryPage(self, scope=self.global_scope)
         self.stack.addWidget(self.query_page)
         pump()
-        self.explorer_page = ExplorerPage(self)
+        self.explorer_page = ExplorerPage(self, scope=self.global_scope)
         self.stack.addWidget(self.explorer_page)
         pump()
         self.tank_attrs_page = TankAttributesPage(self)
