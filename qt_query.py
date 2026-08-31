@@ -342,8 +342,19 @@ class QueryPage(QWidget):
             "global_scope": self._result_scope or "(none)",
             "plot_spec": json.dumps(self._last_spec.to_dict()) if self._last_spec else "(none)",
         }
+        import provenance as prov
+        from qt_help import APP_NAME, APP_VERSION
+        record = prov.build_provenance(
+            self.dataset, app_name=APP_NAME, app_version=APP_VERSION,
+            question={"subject": self._subject_label, "basis": self._result.basis,
+                      "group_by": list(self._result_group_by)},
+            plot_spec=self._last_spec.to_dict() if self._last_spec else {},
+            scope=self._result_scope,
+            warnings=self._result.warnings, disclosures=self._result.disclosures,
+        )
         out_dir = export_utils.export_named_tables(
             self.dataset, f"query_{self._subject_label}", tables, context=context,
+            provenance_record=record,
         )
         try:
             self.plot.figure.savefig(out_dir / "query_plot.png", bbox_inches="tight", dpi=200)

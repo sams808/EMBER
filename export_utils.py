@@ -25,7 +25,7 @@ def safe_name(text: object, max_len: int = 90) -> str:
 
 def export_named_tables(
     dataset: HanfordDataset, folder_prefix: str, tables: Dict[str, Optional[pd.DataFrame]],
-    context: Optional[Dict[str, str]] = None,
+    context: Optional[Dict[str, str]] = None, provenance_record=None,
 ) -> Path:
     """Write each non-None DataFrame in `tables` as `<name>.csv` inside a
     fresh timestamped folder under dataset.output_root, plus a
@@ -42,6 +42,11 @@ def export_named_tables(
     out_dir = dataset.output_root / f"{safe_name(folder_prefix)}_{stamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    if provenance_record is not None:
+        # A full record of what produced these numbers -- so the folder is
+        # self-describing a year later, not just a pile of CSVs.
+        tables = dict(tables)
+        tables["provenance"] = provenance_record.as_table()
     if context:
         tables = dict(tables)
         tables["context"] = pd.DataFrame(
@@ -55,5 +60,10 @@ def export_named_tables(
         path = out_dir / f"{safe_name(name)}.csv"
         df.to_csv(path, index=False)
         manifest_rows.append({"file": path.name, "rows": len(df)})
+    if provenance_record is not None:
+        from provenance import methods_paragraph
+        methods = out_dir / "methods.txt"
+        methods.write_text(methods_paragraph(provenance_record), encoding="utf-8")
+        manifest_rows.append({"file": methods.name, "rows": None})
     pd.DataFrame(manifest_rows).to_csv(out_dir / "manifest.csv", index=False)
     return out_dir

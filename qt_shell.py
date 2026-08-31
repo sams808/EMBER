@@ -28,6 +28,7 @@ from qt_heatmap import HeatmapPage
 from qt_help import ABOUT_HTML, APP_NAME, APP_VERSION, GettingStartedDialog, HelpDialog, asset_path
 from qt_overview import OverviewPage
 from qt_query import QueryPage
+from plot_grammar import MARK_BY_LABEL
 from qt_scope import GlobalScope, GlobalScopeBar
 from qt_tank_attributes import TankAttributesPage
 from qt_tank_explorer import TankExplorerPage
@@ -236,6 +237,9 @@ class EmberMainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction("Open output folder", self._open_output_folder)
         file_menu.addSeparator()
+        file_menu.addAction("Save project…", self.save_project, "Ctrl+S")
+        file_menu.addAction("Open project…", self.open_project, "Ctrl+O")
+        file_menu.addSeparator()
         file_menu.addAction("Exit", self.close, "Ctrl+Q")
 
         view_menu = self.menuBar().addMenu("&View")
@@ -353,6 +357,80 @@ class EmberMainWindow(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             apply_theme(app, dark=enabled)
+
+    # ------------------------------------------------------------------
+    # Projects (.ember): saved baskets, questions and scope
+    # ------------------------------------------------------------------
+    def current_project(self):
+        """The session's saveable state. Kept small and declarative on
+        purpose -- a project is data, not a pickled widget tree."""
+        import provenance as prov
+        from ember_project import EmberProject, SavedQuestion
+
+        project = EmberProject(name=self.dataset.path.stem if self.dataset.path else "")
+        if self.dataset.is_loaded():
+            project.dataset_fingerprint = prov.dataset_fingerprint(self.dataset)
+        project.scope = self.global_scope.as_scope()
+
+        page = self.query_page
+        if page._result is not None:
+            kind = page.kind_combo.currentText().lower()
+            subject = (page.basket_combo.currentText() if kind == "basket"
+                       else page.subject_edit.text().strip())
+            project.add_question(SavedQuestion(
+                name=f"{subject} ({page._result.basis})", subject_kind=kind,
+                subject=subject, basis=page._result.basis,
+                group_by=list(page._result_group_by),
+                scope=self.global_scope.as_scope(),
+                mark=MARK_BY_LABEL.get(page.mark_combo.currentText(), "bar"),
+            ))
+        return project
+
+    def save_project(self) -> None:
+        from ember_project import PROJECT_SUFFIX
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save project", str(self.dataset.output_root),
+            f"Ember project (*{PROJECT_SUFFIX})")
+        if not path:
+            return
+        saved = self.current_project().save(path)
+        self.statusBar().showMessage(f"Project saved: {saved}")
+
+    def open_project(self) -> None:
+        from ember_project import PROJECT_SUFFIX, EmberProject, dataset_mismatch
+        import provenance as prov
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open project", str(self.dataset.output_root),
+            f"Ember project (*{PROJECT_SUFFIX})")
+        if not path:
+            return
+        try:
+            project = EmberProject.load(path)
+        except (ValueError, OSError) as exc:
+            QMessageBox.warning(self, "Open project", str(exc))
+            return
+
+        notes = list(project.problems())
+        if self.dataset.is_loaded():
+            mismatch = dataset_mismatch(project, prov.dataset_fingerprint(self.dataset))
+            if mismatch:
+                notes.insert(0, mismatch)
+
+        with self.global_scope.coalesce():
+            self.global_scope.clear()
+            for column, values in (project.scope or {}).items():
+                self.global_scope.set_filter(column, list(values))
+        self.scope_bar.on_dataset_changed(self.dataset)
+
+        if notes:
+            # A project that no longer fits the data must SAY so, not
+            # quietly load two thirds of itself.
+            QMessageBox.information(
+                self, "Project opened with notes", chr(10).join(notes))
+        self.statusBar().showMessage(
+            f"Project opened: {Path(path).name} "
+            f"({len(project.questions)} saved question(s))")
 
     def show_getting_started(self) -> None:
         dialog = GettingStartedDialog(self)
