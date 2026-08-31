@@ -188,10 +188,20 @@ class GlobalScopeBar(QWidget):
                 self.scope.set_filter(column, None)
                 continue
             combo.setEnabled(True)
-            if fixed:
-                continue  # fixed lists don't repopulate
             current = combo.currentText()
             values = sorted({str(v) for v in df.get_column(column).drop_nulls().unique().to_list()})
+            if fixed:
+                # A fixed list (SST/DST) keeps its entries, but its
+                # SELECTION still has to be reconciled -- skipping that
+                # let an SST filter survive onto an all-DST dataset, where
+                # every query then returned zero rows that read as "no
+                # inventory" (review finding).
+                if current != _ALL and current not in values:
+                    combo.blockSignals(True)
+                    combo.setCurrentIndex(0)
+                    combo.blockSignals(False)
+                    self.scope.set_filter(column, None)
+                continue
             combo.blockSignals(True)
             combo.clear()
             combo.addItem(_ALL)

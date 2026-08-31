@@ -490,9 +490,15 @@ def run_query(
         )
         if unregistered.height:
             labels = sorted(set(unregistered.get_column("Analyte").to_list()))
+            # State the MASS, not just the row count: on the shipped
+            # dataset these 26 rows carry 0.0024 kg out of 149 million,
+            # and a warning that sounds alarming about nothing teaches
+            # people to stop reading warnings.
+            excluded_kg = float(unregistered.get_column("Inventory").sum() or 0.0)
             warnings.append(
-                f"{unregistered.height} kg row(s) of unregistered species excluded from apportionment: "
-                f"{', '.join(labels)} — add their formulas to reference_data.SPECIES_FORMULAS to include them."
+                f"{unregistered.height} kg row(s) of unregistered species excluded from apportionment "
+                f"({excluded_kg:,.4g} kg total): {', '.join(labels)} — add their formulas to "
+                f"reference_data.SPECIES_FORMULAS to include them."
             )
 
     ci_rows = included.filter(pl.col("Ci_value").is_not_null()) if basis != "kg" else included.head(0)

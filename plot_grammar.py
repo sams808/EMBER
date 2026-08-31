@@ -72,12 +72,26 @@ MAX_HEATMAP_CELLS = 4000
 BAR_COLOR = ACCENT_COLOR
 SCATTER_COLOR = "#4C78A8"
 
+# A null in a grouping dimension is a FACT about the dataset (the
+# attributes file leaves TankStatus empty for two thirds of the rows),
+# not an absence of data. Every groupby/pivot in pandas deletes such rows
+# by default, which is how a chart came to show 14% of a query's mass
+# while the table beside it showed 100% -- so nulls are LABELLED here,
+# once, before any grouping happens (review finding).
+NULL_LABEL = "(not reported)"
+
 
 @dataclass(frozen=True)
 class PlotSpec:
     """A declarative plot description. Frozen: derive variants with
     `dataclasses.replace` (re-exported as `spec_replace`), never mutate."""
 
+    # Values are INTENSIVE (a ratio with its own denominator per row --
+    # wt%, g/L) rather than extensive (a total that can be added up).
+    # Intensive values must never be stacked or summed across series: two
+    # layers at 15 wt% are not 30 wt% of anything. Set by the query
+    # planner from the engine basis.
+    intensive: bool = False
     mark: str = "bar"
     x: str = ""                      # value column (bar/box) or x dimension (scatter/heatmap value)
     y: str = ""                      # category column (bar/box/heatmap rows) or y value (scatter)
@@ -211,15 +225,42 @@ def _draw_annotations(ax, spec: PlotSpec) -> None:
                         fontsize=8, color="0.3", ha="right", va="bottom")
 
 
+def _category_dims(spec: PlotSpec) -> List[str]:
+    """The columns of `data` that carry CATEGORIES for this mark (as
+    opposed to values). Scatter is the exception: both axes are values."""
+    dims = [spec.hue, spec.facet]
+    if spec.mark != "scatter":
+        dims.append(spec.y)
+    return [c for c in dims if c]
+
+
+def _label_null_categories(data: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """Replace nulls in every grouping dimension with NULL_LABEL so no
+    downstream groupby/pivot can delete those rows behind the reader's
+    back. They become a visible, labelled category instead."""
+    dims = [c for c in _category_dims(spec) if c in data.columns]
+    if not dims:
+        return data
+    out = data
+    for col in dims:
+        if out[col].isna().any():
+            if out is data:
+                out = data.copy()
+            out[col] = out[col].astype(object).where(out[col].notna(), NULL_LABEL)
+    return out
+
+
 def _trimmed_categories(
-    pdf: pd.DataFrame, spec: PlotSpec, notes: List[str], limit: int,
+    pdf: pd.DataFrame, spec: PlotSpec, notes: List[str], limit: int, total: int,
 ) -> pd.DataFrame:
     """Keep the top `limit` categories BY VALUE (trimming an alphabetical
     listing by position would drop arbitrary categories), then order them
     per spec.sort -- saying on the figure when anything was dropped.
-    Input has one row per category with a _cat_value total column."""
-    total = len(pdf)
-    if total > limit:
+    Input has one row per category with a _cat_value total column;
+    `total` is how many categories the RESULT holds, which is not
+    len(pdf) once unplottable ones have been filtered out (review
+    finding: the note used to count only the survivors)."""
+    if len(pdf) > limit:
         pdf = pdf.nlargest(limit, "_cat_value")
         notes.append(f"top {limit} of {total} {spec.y} shown")
     if spec.sort == "label":
@@ -236,6 +277,18 @@ def _bar_series(data: pd.DataFrame, spec: PlotSpec) -> Optional[pd.DataFrame]:
     return None if pdf.empty else pdf
 
 
+def _note_unplottable(data: pd.DataFrame, pdf: pd.DataFrame, spec: PlotSpec,
+                      notes: List[str]) -> int:
+    """A bar length cannot represent a zero, a negative, or a blank, so
+    those categories are absent from the chart -- say so, and return the
+    true category count for the trim note."""
+    total = int(data[spec.y].nunique(dropna=False))
+    kept = int(pdf[spec.y].nunique(dropna=False))
+    if total > kept:
+        notes.append(f"{total - kept} of {total} {spec.y} not plottable (zero, negative, or blank)")
+    return total
+
+
 @composable
 def render_plot(panel, data: pd.DataFrame, spec: PlotSpec) -> None:
     """Render one PlotSpec onto a PlotWidget-like panel."""
@@ -249,6 +302,16 @@ def render_plot(panel, data: pd.DataFrame, spec: PlotSpec) -> None:
         return
 
     notes: List[str] = []
+    data = _label_null_categories(data, spec)
+    if spec.mark == "stackedbar" and spec.intensive:
+        # sum(m_p / M_p) is not a wt% of anything -- each layer carries
+        # its own denominator (review finding: a tank drew at 107.7 "wt%
+        # of layer mass").
+        panel.show_message(
+            "Stacked bars would add ratios with different denominators.\n"
+            "Use grouped bars or a heatmap for this basis."
+        )
+        return
     if spec.facet is not None:
         _render_faceted(panel, data, spec, notes)
     elif spec.mark in ("bar", "stackedbar"):
@@ -266,26 +329,51 @@ def _bar_limit(spec: PlotSpec) -> int:
     return min(spec.top_n, MAX_BARS) if spec.top_n > 0 else MAX_BARS
 
 
+def _apply_log_x(ax, spec: PlotSpec, notes: List[str], *, allowed: bool = True) -> bool:
+    """Switch to a log x-axis when the spec asks for it AND the mark can
+    honor it. Returns whether the axis is logarithmic, so the axis label
+    can say so -- an undeclared log axis is a chart that lies about the
+    lengths it draws."""
+    if not spec.log_x:
+        return False
+    if not allowed:
+        notes.append("linear axis (segment lengths must stay proportional)")
+        return False
+    ax.set_xscale("log")
+    return True
+
+
+def _axis_label(spec: PlotSpec, ax) -> str:
+    base = spec.xlabel or default_axis_label(spec.x)
+    return f"{base} — log scale" if ax.get_xscale() == "log" else base
+
+
 def _render_bars(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str]) -> None:
     pdf = _bar_series(data, spec)
     if pdf is None:
         panel.show_message("No positive values to plot")
         return
 
+    total_categories = _note_unplottable(data, pdf, spec, notes)
+
     if spec.hue is None:
+        agg = "max" if spec.intensive else "sum"
         grouped = pdf.groupby(spec.y, dropna=False, sort=False).agg(
-            _cat_value=("_val", "sum")).reset_index().rename(columns={spec.y: "_cat"})
+            _cat_value=("_val", agg)).reset_index().rename(columns={spec.y: "_cat"})
         # Keep per-category passenger columns (Units, errorbars) only when
         # they are unambiguous -- a category spanning several rows has no
-        # single error bar or unit.
+        # single error bar or unit. A column that IS the category column
+        # has been consumed into the index and must be skipped (review
+        # finding: grouping by "Units" raised KeyError out of the slot).
         singles = pdf.groupby(spec.y, dropna=False).size()
         unambiguous = bool((singles == 1).all())
         if unambiguous:
             extras = pdf.set_index(spec.y)
             for col in filter(None, [spec.errorbars, "Units"]):
-                if col in pdf.columns:
+                if col in pdf.columns and col != spec.y:
                     grouped[col] = extras[col].reindex(grouped["_cat"]).to_numpy()
-        grouped = _trimmed_categories(grouped, spec, notes, _bar_limit(spec)).iloc[::-1]
+        grouped = _trimmed_categories(
+            grouped, spec, notes, _bar_limit(spec), total_categories).iloc[::-1]
         labels = make_unique_plot_labels(
             grouped.rename(columns={"_cat": spec.y}), spec.y).astype(str)
 
@@ -302,14 +390,22 @@ def _render_bars(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str]) ->
                 xerr=xerr, ecolor="0.3", capsize=2 if xerr is not None else 0)
     else:
         pivot = pdf.pivot_table(index=spec.y, columns=spec.hue, values="_val",
-                                aggfunc="sum", fill_value=0.0)
+                                aggfunc="sum", fill_value=0.0, dropna=False)
+        if pivot.empty or not len(pivot.columns):
+            panel.show_message("No plottable series")
+            return
         hue_levels = list(pivot.sum(axis=0).sort_values(ascending=False).index)
         if len(hue_levels) > MAX_HUE_LEVELS:
             notes.append(f"top {MAX_HUE_LEVELS} of {len(hue_levels)} {spec.hue} series shown")
             hue_levels = hue_levels[:MAX_HUE_LEVELS]
         pivot = pivot[hue_levels]
-        cats = pivot.sum(axis=1).rename("_cat_value").reset_index().rename(columns={spec.y: "_cat"})
-        cats = _trimmed_categories(cats, spec, notes, _bar_limit(spec)).iloc[::-1]
+        # Ranking categories by the SUM across series is only meaningful
+        # for extensive values; for ratios it adds incommensurable
+        # denominators, so rank by the peak series instead.
+        rank = pivot.max(axis=1) if spec.intensive else pivot.sum(axis=1)
+        cats = rank.rename("_cat_value").reset_index().rename(columns={spec.y: "_cat"})
+        cats = _trimmed_categories(
+            cats, spec, notes, _bar_limit(spec), total_categories).iloc[::-1]
         pivot = pivot.loc[cats["_cat"]]
         if spec.errorbars:
             notes.append("error bars not drawn for grouped/stacked marks")
@@ -337,9 +433,13 @@ def _render_bars(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str]) ->
         ax.set_yticklabels(labels, fontsize=8 if len(labels) <= 45 else 6)
         ax.legend(title=spec.hue, fontsize=8, loc="lower right", framealpha=0.9)
 
-    if spec.log_x:
-        ax.set_xscale("log")
-    ax.set_xlabel(spec.xlabel or default_axis_label(spec.x))
+    # A stacked bar asserts that segment lengths partition the total.
+    # On a log axis a segment's drawn length is log(left+v) - log(left),
+    # which depends on its position in the stack, not its value -- that
+    # rank-REVERSED a real composition (review finding). Composition
+    # marks are always linear.
+    _apply_log_x(ax, spec, notes, allowed=spec.mark != "stackedbar")
+    ax.set_xlabel(_axis_label(spec, ax))
     if spec.ylabel:
         ax.set_ylabel(spec.ylabel)
     ax.grid(True, axis="x", alpha=0.25)
@@ -351,11 +451,14 @@ def _render_bars(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str]) ->
 def _render_heatmap(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str]) -> None:
     pdf = data.copy()
     pdf["_val"] = numeric_plot_series(pdf[spec.x])
-    pdf = pdf.dropna(subset=[spec.y, spec.hue])
     if pdf.empty or pdf["_val"].dropna().empty:
         panel.show_message("No data to plot")
         return
-    pivot = pdf.pivot_table(index=spec.y, columns=spec.hue, values="_val", aggfunc="sum")
+    # min_count=1 keeps a cell whose only measurement is blank BLANK.
+    # Plain "sum" turns it into a hard 0.0, painting "we don't know" at
+    # the floor of the scale next to real zeros (review finding).
+    pivot = pdf.pivot_table(index=spec.y, columns=spec.hue, values="_val",
+                            aggfunc=lambda s: s.sum(min_count=1), dropna=False)
     pivot = pivot.loc[pivot.sum(axis=1, skipna=True).sort_values(ascending=False).index]
     max_rows = max(1, MAX_HEATMAP_CELLS // max(1, pivot.shape[1]))
     if len(pivot) > max_rows:
@@ -441,9 +544,13 @@ def _render_box(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str]) -> 
     if pdf is None:
         panel.show_message("No positive values to plot")
         return
+    total_categories = _note_unplottable(data, pdf, spec, notes)
     grouped = pdf.groupby(spec.y, dropna=False)["_val"]
-    order = grouped.sum().rename("_cat_value").reset_index().rename(columns={spec.y: "_cat"})
-    order = _trimmed_categories(order, spec, notes, _bar_limit(spec)).iloc[::-1]
+    # A box summarizes a distribution, so rank categories by their median
+    # rather than by a total that says nothing about where the box sits.
+    order = grouped.median().rename("_cat_value").reset_index().rename(columns={spec.y: "_cat"})
+    order = _trimmed_categories(
+        order, spec, notes, _bar_limit(spec), total_categories).iloc[::-1]
     cats = list(order["_cat"])
     series = [grouped.get_group(c).to_numpy(dtype=float) for c in cats]
 
@@ -452,9 +559,8 @@ def _render_box(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str]) -> 
         panel.figure.get_size_inches()[0], bar_figure_height(len(cats), per_bar=0.30))
     ax.boxplot(series, orientation="horizontal", tick_labels=[str(c) for c in cats],
                flierprops={"markersize": 3, "alpha": 0.5})
-    if spec.log_x:
-        ax.set_xscale("log")
-    ax.set_xlabel(spec.xlabel or default_axis_label(spec.x))
+    _apply_log_x(ax, spec, notes)
+    ax.set_xlabel(_axis_label(spec, ax))
     ax.grid(True, axis="x", alpha=0.25)
     _draw_annotations(ax, spec)
     _apply_titles(panel, ax, spec, notes)
@@ -465,7 +571,7 @@ def _render_faceted(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
     if spec.mark not in ("bar", "scatter"):
         panel.show_message(f"facet is supported for bar and scatter marks, not {spec.mark!r}")
         return
-    pdf = data.dropna(subset=[spec.facet]).copy()
+    pdf = data.copy()
     if pdf.empty:
         panel.show_message("No data to plot")
         return
@@ -484,11 +590,20 @@ def _render_faceted(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
     panel.set_figure_size_inches(width, height)
     axes = panel.figure.subplots(n_rows, n_cols, squeeze=False)
     per_facet = spec_replace(spec, facet=None, title="", subtitle="")
+    trimmed_in_facet = 0
+    facet_total = 0
     for i, level in enumerate(levels):
         ax = axes[i // n_cols][i % n_cols]
         sub = pdf[pdf[spec.facet] == level]
-        _draw_facet_cell(ax, sub, per_facet)
+        drawn, available = _draw_facet_cell(ax, sub, per_facet)
+        trimmed_in_facet = max(trimmed_in_facet, drawn)
+        facet_total = max(facet_total, available)
         ax.set_title(str(level), fontsize=9)
+    if facet_total > trimmed_in_facet:
+        # Per-facet trimming was silent before: _draw_facet_cell never
+        # received the notes list its own docstring promised to feed
+        # (review finding).
+        notes.append(f"top {trimmed_in_facet} of {facet_total} {spec.y} per facet")
     for j in range(len(levels), n_rows * n_cols):
         axes[j // n_cols][j % n_cols].set_axis_off()
     panel.ax = axes[0][0]
@@ -499,9 +614,11 @@ def _render_faceted(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
     panel.figure.tight_layout(rect=(0, 0.02 if footer else 0, 1, 0.96))
 
 
-def _draw_facet_cell(ax, sub: pd.DataFrame, spec: PlotSpec) -> None:
+def _draw_facet_cell(ax, sub: pd.DataFrame, spec: PlotSpec) -> Tuple[int, int]:
     """One facet's worth of bar/scatter, kept deliberately lean (no
-    per-facet legends or notes -- the shared suptitle/footer carry those)."""
+    per-facet legends -- the shared suptitle/footer carry those).
+    Returns (drawn, available) categories so the caller can put the trim
+    on the figure; a facet cell has no way to say anything itself."""
     if spec.mark == "bar":
         vals = numeric_plot_series(sub[spec.x])
         pdf = sub.assign(_val=vals).dropna(subset=[spec.y, "_val"])
@@ -510,15 +627,17 @@ def _draw_facet_cell(ax, sub: pd.DataFrame, spec: PlotSpec) -> None:
             ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center",
                     fontsize=8, color="0.5")
             ax.set_axis_off()
-            return
-        grouped = (pdf.groupby(spec.y, dropna=False)["_val"].sum()
-                   .sort_values(ascending=False).head(min(_bar_limit(spec), 15)).iloc[::-1])
+            return (0, 0)
+        totals = pdf.groupby(spec.y, dropna=False)["_val"].sum().sort_values(ascending=False)
+        available = len(totals)
+        grouped = totals.head(_bar_limit(spec)).iloc[::-1]
         ax.barh([str(v) for v in grouped.index], grouped.to_numpy(dtype=float),
                 color=BASE_COLOR if spec.palette == "single" else BAR_COLOR)
         if spec.log_x:
             ax.set_xscale("log")
         ax.tick_params(labelsize=7)
         ax.grid(True, axis="x", alpha=0.25)
+        return (len(grouped), available)
     else:
         x = numeric_plot_series(sub[spec.x])
         y = numeric_plot_series(sub[spec.y])
@@ -535,3 +654,4 @@ def _draw_facet_cell(ax, sub: pd.DataFrame, spec: PlotSpec) -> None:
             ax.set_yscale("log")
         ax.tick_params(labelsize=7)
         ax.grid(True, alpha=0.25)
+        return (int(keep.sum()), int(keep.sum()))  # scatter draws every point

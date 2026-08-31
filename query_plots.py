@@ -67,14 +67,28 @@ def plan_plot(
       dimension-1 values within each dimension-2 level.
     """
     dims: List[str] = list(group_by)
+    # wt% and g/L are INTENSIVE: each row is a ratio over its own layer
+    # denominator, so those values must never be added across rows or
+    # series. The renderer enforces it; the planner is where the fact
+    # about the basis lives.
+    intensive = result.basis in ("wt%", "g/L")
     common = dict(
         x=result.value_column,
         title=f"{subject_label} — {result.basis}",
         subtitle=subtitle,
+        intensive=intensive,
         # Mass/activity totals span orders of magnitude across tanks;
-        # concentrations don't.
+        # concentrations don't. Never on a stacked bar, whose segment
+        # lengths must stay proportional (set per-mark below).
         log_x=result.basis in ("g", "kg", "Ci"),
     )
+    stack_common = dict(common, log_x=False)
+
+    if mark == "stackedbar" and intensive:
+        return PlotPlan(refusal=(
+            f"Stacked bars would add {result.basis} values that each have their own layer "
+            f"denominator. Use grouped bars or a heatmap for this basis."
+        ))
 
     if not dims:
         if mark != "bar":
@@ -82,12 +96,18 @@ def plan_plot(
         return PlotPlan(result.member_table, PlotSpec(mark="bar", y="Member", **common),
                         source=SOURCE_MEMBER_TABLE)
 
+
     if len(dims) == 1:
         dim = dims[0]
         if mark == "bar":
             return PlotPlan(result.table, PlotSpec(mark="bar", y=dim, **common))
-        if mark in ("stackedbar", "heatmap"):
-            return PlotPlan(result.member_table, PlotSpec(mark=mark, y=dim, hue="Member", **common),
+        if mark == "stackedbar":
+            return PlotPlan(result.member_table,
+                            PlotSpec(mark="stackedbar", y=dim, hue="Member", **stack_common),
+                            source=SOURCE_MEMBER_TABLE)
+        if mark == "heatmap":
+            return PlotPlan(result.member_table,
+                            PlotSpec(mark="heatmap", y=dim, hue="Member", **common),
                             source=SOURCE_MEMBER_TABLE)
         if mark == "box":
             return PlotPlan(refusal="Box needs two grouping dimensions (distribution of dim 1 within dim 2).")
@@ -98,4 +118,7 @@ def plan_plot(
         return PlotPlan(result.table, PlotSpec(mark="box", y=dim2, **common))
     if mark == "scatter":
         return PlotPlan(refusal="Scatter needs two value columns; this result has one.")
+    if mark == "stackedbar":
+        return PlotPlan(result.table,
+                        PlotSpec(mark="stackedbar", y=dim1, hue=dim2, **stack_common))
     return PlotPlan(result.table, PlotSpec(mark=mark, y=dim1, hue=dim2, **common))

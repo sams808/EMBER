@@ -60,6 +60,13 @@ class QueryPage(QWidget):
         self.dataset: Optional[HanfordDataset] = None
         self._result = None
         self._subject_label = ""
+        # The grouping and scope the STANDING result was computed under.
+        # The live combos can differ (the user changed one without
+        # re-running), and labelling a result with anything other than
+        # what produced it is how a chart comes to claim a scope or a
+        # grouping that never touched the numbers (review finding).
+        self._result_group_by: List[str] = []
+        self._result_scope = ""
         self._last_spec: Optional[PlotSpec] = None
         self._build_ui()
 
@@ -219,6 +226,8 @@ class QueryPage(QWidget):
         # (and must never export into the new dataset's output folder).
         self._result = None
         self._subject_label = ""
+        self._result_group_by = []
+        self._result_scope = ""
         self._last_spec = None
         for view in (self.result_view, self.member_view, self.notes_view):
             view.set_dataframe(pd.DataFrame())
@@ -257,10 +266,11 @@ class QueryPage(QWidget):
             QMessageBox.information(self, "Query", "Enter a subject first.")
             return
 
+        group_by = self._selected_group_by()
         try:
             result = run_query(
                 self.dataset, subject=subject, basis=self.basis_combo.currentText(),
-                group_by=self._selected_group_by(), scope=self.scope.as_scope(),
+                group_by=group_by, scope=self.scope.as_scope(),
             )
         except ValueError as exc:
             QMessageBox.warning(self, "Query", str(exc))
@@ -268,6 +278,8 @@ class QueryPage(QWidget):
 
         self._result = result
         self._subject_label = subject_label
+        self._result_group_by = group_by
+        self._result_scope = self.scope.summary()
         self.result_view.set_dataframe(result.table)
         self.member_view.set_dataframe(result.member_table)
         notes = pd.DataFrame(
@@ -291,14 +303,16 @@ class QueryPage(QWidget):
 
     # ------------------------------------------------------------------
     def _scope_subtitle(self) -> str:
-        summary = self.scope.summary()
-        return f"Scope: {summary}" if summary else ""
+        # The scope the STANDING result was computed under, never the live
+        # one: a scope change whose re-run early-returns (blank subject,
+        # engine refusal) must not relabel the old numbers.
+        return f"Scope: {self._result_scope}" if self._result_scope else ""
 
     def _update_plot(self) -> None:
         if self._result is None:
             return
         plan = plan_plot(
-            self._result, self._selected_group_by(),
+            self._result, self._result_group_by,
             MARK_BY_LABEL[self.mark_combo.currentText()],
             subject_label=self._subject_label, subtitle=self._scope_subtitle(),
         )
@@ -325,7 +339,7 @@ class QueryPage(QWidget):
         context = {
             "subject": self._subject_label,
             "basis": self._result.basis,
-            "global_scope": self.scope.summary() or "(none)",
+            "global_scope": self._result_scope or "(none)",
             "plot_spec": json.dumps(self._last_spec.to_dict()) if self._last_spec else "(none)",
         }
         out_dir = export_utils.export_named_tables(
