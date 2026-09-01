@@ -462,13 +462,56 @@ def drop_pair_restatements(df: pl.DataFrame) -> Tuple[pl.DataFrame, Optional[str
         return df, None
     out = df.join(keys, on=list(keys.columns), how="anti", nulls_equal=True)
     labels = sorted(set(keys.get_column("Analyte").to_list()))
-    note = (
-        f"{df.height - out.height} Ci row(s) set aside as restatements "
-        f"({', '.join(labels)}): a combined-pair label is the sum of its members, "
-        f"and this dataset reports both — counting them together would add the "
-        f"same activity twice."
-    )
+    ci = df.filter(pl.col("Units") == "Ci") if "Units" in df.columns else df
+    note = _pair_restatement_sentence(df.height - out.height, labels, ci, "Inventory")
     return out, note
+
+
+def _pair_restatement_sentence(n_set_aside: int, labels: List[str],
+                               ci: pl.DataFrame, value_col: str) -> str:
+    """The one wording of the set-aside note, shared by every caller so
+    the sentences cannot drift — and honest about the arithmetic: the
+    2026 export's 243/244Cm pair does NOT equal 243Cm+244Cm in 27 of 42
+    layers (pair 364.4 vs members 285.9 Ci), so asserting "the pair is
+    the sum of its members" stated as fact what the dataset's own
+    numbers contradict. When the measured aggregate disagreement exceeds
+    0.5% it is stated; the itemised members are what gets booked."""
+    note = (
+        f"{n_set_aside} Ci row(s) set aside as restatements "
+        f"({', '.join(labels)}): a combined-pair label reports the same activity "
+        f"as its itemised members, and this dataset reports both — counting them "
+        f"together would add the same activity twice."
+    )
+    layer = [c for c in _LAYER_KEYS if c in ci.columns]
+    if not layer or value_col not in ci.columns:
+        return note
+    total_pair = total_members = 0.0
+    n_layers = n_off = 0
+    for pair, members in COMBINED_PAIR_MEMBERS.items():
+        both = (
+            ci.filter(pl.col("Analyte").is_in([pair, *members]))
+            .group_by(layer).agg([
+                pl.col(value_col).filter(pl.col("Analyte") == pair).sum().alias("_pair"),
+                pl.col(value_col).filter(pl.col("Analyte") != pair).sum().alias("_members"),
+                pl.col("Analyte").filter(pl.col("Analyte") != pair).n_unique().alias("_n_members"),
+            ])
+            .filter((pl.col("_pair") > 0) & (pl.col("_n_members") == len(members)))
+        )
+        if both.is_empty():
+            continue
+        n_layers += both.height
+        n_off += both.filter(
+            ((pl.col("_members") / pl.col("_pair")) - 1.0).abs() > 0.005
+        ).height
+        total_pair += float(both["_pair"].sum() or 0.0)
+        total_members += float(both["_members"].sum() or 0.0)
+    if total_pair > 0 and abs(total_members / total_pair - 1.0) > 0.005:
+        note += (
+            f" Note: in {n_off} of {n_layers} such layer(s) the pair does NOT equal "
+            f"its itemised members (pairs {total_pair:,.4g} Ci vs members "
+            f"{total_members:,.4g} Ci) — the itemised members are booked."
+        )
+    return note
 
 
 def _mass_restatement_warnings(contrib: pl.DataFrame) -> List[str]:
@@ -481,7 +524,11 @@ def _mass_restatement_warnings(contrib: pl.DataFrame) -> List[str]:
     restated = contrib.filter(~pl.col("MassCounts"))
     if restated.is_empty():
         return out
-    bridged = restated.filter(pl.col("Units") == "Ci")
+    # Bridged means Mass_g is not null: a combined-pair row has no single
+    # specific activity, so it belongs to the not-mass-bridgeable warning,
+    # not this one -- counting it in both described one physical row twice,
+    # by contradictory reasons (review finding).
+    bridged = restated.filter((pl.col("Units") == "Ci") & pl.col("Mass_g").is_not_null())
     itemised = restated.filter(pl.col("Units") != "Ci")
     if bridged.height:
         labels = sorted(set(bridged.get_column("Analyte").to_list()))
@@ -606,10 +653,20 @@ def _member_disclosure(name: str, contrib: pl.DataFrame) -> str:
 
 def _layer_denominators(scoped: pl.DataFrame, layer_dims: List[str]) -> pl.DataFrame:
     """Sum of distinct-layer masses (g) and volumes (L) per group of
-    layer-compatible dims, over ALL in-scope layers of the group."""
+    layer-compatible dims, over ALL in-scope layers of the group.
+
+    A layer's rows may carry MORE than one (Volume, ComponentDensity)
+    cohort under a single (tank, phase, type) label -- the 2026 BBI
+    re-export does exactly that for 241-AW-102's saltcake interstitial
+    liquid (76 rows at 52 kL/1.30 beside 75 rows at 2 kL/1.31). The
+    layer's true mass and volume are the SUMS over its cohorts, so the
+    uniqueness key must include the cohort columns: `unique` on the layer
+    key alone kept ONE arbitrary cohort and silently dropped the other
+    from the denominator."""
+    cohort_key = [c for c in _LAYER_KEYS + ["Volume", "ComponentDensity"] if c in scoped.columns]
     layers = scoped.select(
         [c for c in dict.fromkeys(_LAYER_KEYS + layer_dims + ["Volume", "ComponentDensity"]) if c in scoped.columns]
-    ).unique(subset=_LAYER_KEYS)
+    ).unique(subset=cohort_key)
     layers = layers.with_columns([
         (pl.col("Volume") * 1000.0).alias("_layer_volume_L"),          # kL -> L
         (pl.col("Volume") * 1.0e6 * pl.col("ComponentDensity")).alias("_layer_mass_g"),  # kL -> mL x g/mL
@@ -738,11 +795,10 @@ def run_query(
         restated = contrib.filter(pl.col("Ci_value").is_not_null() & ~pl.col("ActivityCounts"))
         if restated.height:
             labels = sorted(set(restated.get_column("Analyte").to_list()))
-            warnings.append(
-                f"{restated.height} Ci row(s) set aside as restatements ({', '.join(labels)}): "
-                f"a combined-pair label is the sum of its members, and this dataset reports "
-                f"both — counting them together would add the same activity twice."
-            )
+            warnings.append(_pair_restatement_sentence(
+                restated.height, labels,
+                contrib.filter(pl.col("Ci_value").is_not_null()), "Ci_value",
+            ))
     elif basis == "kg":
         # MassCounts gates this basis too: a kg TOTAL restating a kg
         # itemisation (TOC over the organic anions) is a kg-vs-kg overlap
@@ -771,6 +827,43 @@ def run_query(
             )
 
     # ---- central data-integrity warnings ----
+    # A layer label covering more than one (Volume, Density) cohort is a
+    # data fact worth stating on EVERY basis: a summed total includes
+    # every cohort's inventory, and the 2026 re-export's one such layer
+    # (241-AW-102 saltcake interstitial liquid) carries what is provably
+    # the PREVIOUS export's assessment rescaled 52/55 alongside its 2-kL
+    # replacement — booking ~26x the current assessment. The app cannot
+    # adjudicate which PHOENIX product is right (the same pull's volumes
+    # export says 2 kL, which would imply a physically impossible
+    # ~4,000 g/L of sodium), so it must neither drop rows nor assert the
+    # sum is "the true total": it states the fact and points at the
+    # cross-check. Gating this to concentration bases hid it exactly
+    # where it mattered most (review finding).
+    if {"Volume", "ComponentDensity"} <= set(df.columns):
+        cohorts = (
+            df.select(_LAYER_KEYS + ["Volume", "ComponentDensity"])
+            .unique()
+            .group_by(_LAYER_KEYS).agg(pl.len().alias("_n"))
+            .filter(pl.col("_n") > 1)
+        )
+        if cohorts.height:
+            names = sorted({
+                f"{r['WasteSiteId']}/{r['WastePhase']}"
+                for r in cohorts.head(4).iter_rows(named=True)
+            })
+            more = " …" if cohorts.height > 4 else ""
+            effect = (
+                f"the {basis} denominator sums the cohorts" if basis in ("wt%", "g/L")
+                else "totals include every cohort's inventory"
+            )
+            warnings.append(
+                f"{cohorts.height} layer(s) carry more than one (Volume, Density) cohort under "
+                f"one label ({', '.join(names)}{more}) — {effect}, as published. A multi-cohort "
+                f"label can carry a superseded assessment republished beside its replacement; "
+                f"verify this layer against the BBI per-layer volumes before relying on its "
+                f"absolute total."
+            )
+
     # A registered-species miss must never be silent: a kg compound row
     # whose formula the registry lacks, but whose parsed constituents
     # include a requested element, is EXCLUDED (no honest apportionment
@@ -808,6 +901,11 @@ def run_query(
             (pl.col("Units") == "kg")
             & (pl.col("AnalyteClass") == "unparsed")
             & (pl.col("Inventory") > 0)
+            # A registered species the load-time parser cannot read
+            # ("Water") still reaches its elements through
+            # SPECIES_FORMULAS -- counting it here called 814 t of
+            # perfectly-booked water "unresolvable" (2026 re-export).
+            & ~pl.col("Analyte").is_in(list(SPECIES_FORMULAS))
         )
         if unresolvable.height:
             unresolved_kg = float(unresolvable.get_column("Inventory").sum() or 0.0)

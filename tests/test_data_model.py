@@ -418,7 +418,8 @@ class TestRealData:
     def test_row_and_tank_counts(self):
         dataset = dm.HanfordDataset()
         report = dataset.load(REAL_CSV_PATH, use_cache=False, attributes_path=REAL_ATTRS_PATH)
-        assert report.rows == 46894
+        # 2026 PHOENIX re-export (was 46,894 in the 2015-decay export).
+        assert report.rows == 46597
         assert dataset.df.get_column("WasteSiteId").n_unique() == 177
         assert dataset.df.get_column("Analyte").n_unique() == 193
 

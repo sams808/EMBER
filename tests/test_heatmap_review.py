@@ -115,8 +115,9 @@ class TestUnattributableMassIsReported:
         dataset.load(REAL_CSV_PATH, use_cache=True)
         result = mq.engine_matrix(dataset, basis="kg", top_n_elements=35)
         note = " ".join(w for w in result.warnings if "not attributable" in w.lower())
-        assert note, "the 515 kg of unparsed organics is still silent"
-        assert "515" in note, f"the warning does not quantify the real loss: {note!r}"
+        assert note, "the unparsed organics are still silent"
+        # 487.7 kg over 68 analytes in the 2026 re-export (was 515.3 over 68).
+        assert "487" in note, f"the warning does not quantify the real loss: {note!r}"
 
 
 class TestLegacyPathDisclosesItsOwnTrims:

@@ -82,6 +82,36 @@ Ember can also open `.csv`, `.tsv`, `.txt`, and `.parquet`/`.pq` files via
 **Load CSV/Parquet…**, so you can point it at an updated PHOENIX export
 without editing anything.
 
+### 1.2 Known anomalies in the bundled 2026 export
+
+Two rows of the bundled BBI re-export (published 2025-12-31 / 2026-06-30)
+look like upstream data problems, found by cross-checking the export
+against itself and against the same pull's per-layer volumes product.
+Ember deliberately does **not** drop or "correct" bundled data — it
+computes what was published and warns — so both are listed here until the
+BBI republishes:
+
+- **241-AW-102 saltcake interstitial liquid ships twice.** The layer
+  carries two (volume, density) cohorts under one label: a 2 kL / 1.31
+  g/mL re-characterization, and a 52 kL / 1.30 cohort that is the
+  *previous* export's 55 kL assessment rescaled by exactly 52/55 (all 76
+  analytes match 1:1). The same pull's per-layer volumes export lists the
+  layer at 2 kL only — but taking 2 kL alone would imply a physically
+  impossible ~4,000 g/L of sodium, so neither product is self-evidently
+  right. Ember sums the cohorts as published and warns on every query
+  that touches the layer. Layer-scoped absolute totals there are
+  suspect (~26× apart between the two readings); the effect on whole-tank
+  AW-102 numbers is ~1.4%, and on site totals negligible.
+- **241-AZ-102 supernatant radionuclide revision is physically
+  impossible.** One revised layer (CCB-1842, RSD 0) raises ²²⁶Ra from
+  8.9×10⁻⁵ to 793 Ci — 85,000× the site's previous total and ~262× the
+  ceiling its own uranium chain could support at secular equilibrium —
+  and similarly implausible ¹³⁴Cs (581 Ci, a ¹³⁴Cs/¹³⁷Cs ratio of
+  9×10⁻⁴ is inconsistent with the layer's stated decay date) and ¹²⁵Sb
+  values. Overview/Heatmap rankings of ²²⁶Ra, ¹³⁴Cs, ¹²⁵Sb and ¹⁵²Eu
+  are driven by this one suspect layer. Treat those four site totals as
+  provisional and consider reporting the layer to PHOENIX/BBI.
+
 ---
 
 ## 2. General architecture
@@ -135,7 +165,7 @@ workspace to arrange, label, and export the panel grid (§13).
   the input file on disk.
 - **Use parquet cache** — reuses a cleaned Parquet cache if one already
   exists next to the source CSV, for much faster reloads (loading the raw
-  46,894-row CSV and re-parsing every analyte takes noticeably longer than
+  46,597-row CSV and re-parsing every analyte takes noticeably longer than
   reading the cache).
 - **Refresh cache** — ignores any existing cache and rebuilds it from the
   original CSV. Use after the source CSV changes, or if you suspect the
@@ -231,8 +261,8 @@ up, stop and investigate before building on it.
 with Heatmaps (§9) about what the waste contains: each element receives
 its stoichiometric share of every species reporting it. `N_analytes`
 therefore counts the species that carry the element — sulfur genuinely
-arrives via SO₄, sulfide *and* thiosulfate — rather than being a property
-of one label.
+arrives via SO₄ *and* sulfide — rather than being a property of one
+label.
 
 The **Unit** picker sets the basis for that table. `kg` and `Ci` keep a
 single reported unit; **`All` means grams**, with curie rows bridged onto
@@ -508,7 +538,9 @@ the score they produce, so you can see exactly how sensitive the ranking
 is to your own judgment about what matters most.
 
 `frac_*` values are each group's share of the tank's **total kg
-inventory** (not oxide-converted) — except when the **basis** toggle is
+inventory with a parsed primary element** (not oxide-converted; the rare
+rows whose analyte parses to no element are excluded, and the tab names
+the excluded mass beside its caveat note) — except when the **basis** toggle is
 set to `oxide`, which swaps *only* the glass-former term to the oxide-wt%
 glass-former fraction computed in §12.2 (SiO₂+B₂O₃+P₂O₅+Al₂O₃'s combined
 share of the tank's oxide-converted composition); every other term stays
@@ -519,8 +551,8 @@ convert to very different amounts of oxide (different molar masses,
 different stoichiometry), so the oxide basis is arguably the more
 chemically honest of the two once you have it available.
 
-Also reported: `Ci_per_kg_proxy` (total Ci ÷ total kg, a coarse
-activity-density indicator) and `RelativeActivityBin` (the dataset's tanks
+Also reported: `Ci_per_kg_proxy` (total Ci ÷ total kg over the same
+parsed-element rows, a coarse activity-density indicator) and `RelativeActivityBin` (the dataset's tanks
 split into 4 quartiles — low/medium-low/medium-high/high — by that same
 ratio, purely for quick relative sorting, not an absolute classification).
 

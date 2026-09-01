@@ -282,8 +282,9 @@ class ExplorerPage(QWidget):
             + [{"kind": "disclosure", "text": d} for d in engine.disclosures]
             + [{"kind": "disclosure", "text":
                 "Co-elements, Co-analytes and the Composition tabs count reported rows "
-                "as they are (each analyte's full mass under its first parsed element). "
-                "The Target tabs above are apportioned."}]
+                "as they are (each analyte's full mass under its first parsed element); "
+                "rows whose analyte parses to no element at all are excluded from those "
+                "tabs and their tank totals. The Target tabs above are apportioned."}]
         )
         self._table_views["Notes"].set_dataframe(notes)
         if engine.warnings:

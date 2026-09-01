@@ -10,6 +10,7 @@ import polars as pl
 import pytest
 
 import data_model as dm
+import query_engine as qe
 import reference_data as rd
 from query_engine import run_query
 
@@ -101,18 +102,23 @@ class TestMassConservation:
         )
         assert apportioned == pytest.approx(expected, rel=1e-9)
 
-    def test_bridging_never_doubles_an_element_reported_both_ways(self, real_dataset):
+    def test_bridging_adds_only_where_a_layer_reports_no_mass(self, real_dataset):
         """A mass reported for an element already includes its
-        radionuclides. Bridging curies to grams may only ADD where a layer
-        reports activity and no mass, so the g-basis total can sit a little
-        above the kg total, never near double it.
+        radionuclides, so bridged curies may ADD only in layers that
+        report activity and no mass. The invariant is stated per LAYER
+        and derived here from raw rows, independent of the engine.
 
-        Measured on the shipped dataset after the fix: U 1.0007, Th 1.0005
-        (both were 1.999 and 2.003 when the bridged isotopes were being
-        added to UTOTAL), Sr/Zr/Ni/C/H 1.0000. Samarium is the high end at
-        1.093 because more of its layers report 151Sm activity without a
-        bulk Sm mass -- that excess is real information, not a restatement.
+        This replaced a global "g/kg ratio < 1.25" bound: that bound was
+        a property of the 2015 export's data shape, not of correctness.
+        The 2026 re-export cut elemental Sn from 954 to 23 kg while 542
+        layers still report only 126Sn activity (81 g per Ci), so tin's
+        legitimate ratio is now 2.36 -- the bridged excess is real
+        information from layers with no bulk measurement, exactly what
+        129I relies on. Uranium stays ~1.0000 because nearly every layer
+        reporting uranium activity also reports UTOTAL.
         """
+        df = real_dataset.require_df()
+        layer = ["WasteSiteId", "WastePhase", "WasteType"]
         both_ways = ["U", "Th", "Sm", "Sn", "Sr", "Zr", "Ni", "Se", "C", "H"]
         for element in both_ways:
             as_kg = run_query(real_dataset, subject=("element", element), basis="kg")
@@ -120,11 +126,27 @@ class TestMassConservation:
             kg_total = float(as_kg.table["Total_kg"].sum())
             if kg_total <= 0:
                 continue
-            ratio = (float(as_g.table["Total_g"].sum()) / 1000.0) / kg_total
-            assert ratio < 1.25, (
-                f"{element}: g basis is {ratio:.3f}x the reported mass -- "
-                f"its nuclides are being counted on top of the bulk measurement"
+            # Independent ceiling from raw rows: reported mass, plus the
+            # bridgeable grams of this element's nuclides in layers where
+            # NO row books positive mass to the element.
+            contrib = qe._element_contributions(df, element)
+            mass_layers = (
+                contrib.filter((pl.col("Units") != "Ci")
+                               & pl.col("Mass_g").is_not_null() & (pl.col("Mass_g") > 0))
+                .select(layer).unique()
             )
+            bridged_ok = contrib.filter(
+                (pl.col("Units") == "Ci") & pl.col("Mass_g").is_not_null()
+            ).join(mass_layers, on=layer, how="anti", nulls_equal=True)
+            ceiling_kg = kg_total + float(bridged_ok["Mass_g"].sum() or 0.0) / 1000.0
+            g_total_kg = float(as_g.table["Total_g"].sum()) / 1000.0
+            assert g_total_kg == pytest.approx(ceiling_kg, rel=1e-6), (
+                f"{element}: g basis {g_total_kg:,.1f} kg differs from reported mass "
+                f"+ no-mass-layer bridging {ceiling_kg:,.1f} kg -- either a nuclide is "
+                f"counted on top of a bulk measurement, or legitimate bridging is lost"
+            )
+            # And the directly-reported mass is always fully counted.
+            assert g_total_kg >= kg_total * (1 - 1e-9), element
 
     def test_species_provenance_split_sums_to_the_element_total(self, real_dataset):
         """Grouping an element subject by Analyte answers "which species

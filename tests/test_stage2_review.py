@@ -361,9 +361,10 @@ class TestPlotMatchesTheResultItDraws:
 class TestChartAgreesWithTheTableOnRealData:
     """The end-to-end statement of every finding above, on the real
     dataset: whatever the Result tab totals, the figure beside it must
-    draw -- or say what it left out. TankStatus is null on 31,945 of the
-    46,894 real rows, which is what made this the sharpest available
-    test case (85.3% of the sulfur mass used to vanish from the chart)."""
+    draw -- or say what it left out. TankStatus is null on most of the
+    real rows (31,945 of 46,894 in the export this was found on), which
+    is what made this the sharpest available test case (85.3% of the
+    sulfur mass used to vanish from the chart)."""
 
     @pytest.fixture
     def loaded_page(self, qtbot):

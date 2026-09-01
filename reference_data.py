@@ -96,6 +96,10 @@ SPECIES_FORMULAS: Dict[str, Dict[str, int]] = {
     "Thiosulfate": {"S": 2, "O": 3},
     "Tributyl phosphate": {"C": 12, "H": 27, "O": 4, "P": 1},
     "UTOTAL": {"U": 1},
+    # First appears in the 2026 BBI re-export (one 814 t kg row,
+    # 241-AP-103 supernatant). Kept even though older exports lack it:
+    # an entry with no matching rows contributes nothing.
+    "Water": {"H": 2, "O": 1},
 }
 
 # Half-lives in years (ICRP-107; combined pairs None -> not bridgeable).
@@ -157,12 +161,14 @@ NUCLIDE_HALF_LIFE_YEARS: Dict[str, Optional[float]] = {
     "144Ce/Pr": None,
 }
 
-# What each combined-pair label is the sum of. The BBI frequently reports
-# BOTH the pair and its members for the same layer -- in the shipped data
-# every one of the 181 layers carrying 239/240Pu also carries 239Pu and
-# 240Pu, and the pair equals their sum to within 0.5%. Adding all three
+# What each combined-pair label restates. The BBI frequently reports
+# BOTH the pair and its members for the same layer, and adding all three
 # counts the same activity twice, so a caller must pick one
-# representation; this table is what lets it.
+# representation; this table is what lets it. The two need NOT agree
+# arithmetically: 239/240Pu matches 239Pu+240Pu within 0.5% across the
+# dataset, but the 2026 export's 243/244Cm disagrees with 243Cm+244Cm in
+# 27 of 42 layers (pair 364.4 vs members 285.9 Ci) -- the engine books
+# the itemised members and DISCLOSES the measured disagreement.
 COMBINED_PAIR_MEMBERS: Dict[str, Tuple[str, ...]] = {
     "239/240Pu": ("239Pu", "240Pu"),
     "243/244Cm": ("243Cm", "244Cm"),

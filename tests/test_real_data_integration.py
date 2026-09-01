@@ -5,7 +5,7 @@ environment that has copied the real files in, never in a clean CI
 checkout). These are deliberately NOT a re-verification of correctness
 (that's what the synthetic-fixture unit tests in every other test_*.py
 module are for, per the project's stated testing philosophy) -- they are
-a small, targeted "does the real 46,894-row / 177-tank dataset actually
+a small, targeted "does the real 46,597-row / 177-tank dataset actually
 flow through every major workspace's entry point without crashing, with
 sane real numbers" smoke pass. This formalizes, as an automated regression
 test, what M6-M12 verified by hand via screenshots during development

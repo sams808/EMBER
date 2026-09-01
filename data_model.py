@@ -39,7 +39,8 @@ from elements import (
 # (Inventory_RSD/VolumeRSD/ComponentDensity) properly scrubbed as numerics,
 # dormant InventoryPositive/log10_Inventory dropped. Bumping this makes
 # every stale v1 parquet cache rebuild instead of silently missing columns.
-CACHE_SCHEMA_VERSION = "ember_v2"
+# v3: "Water" gained a parser alias -- cached Element columns from v2 are stale.
+CACHE_SCHEMA_VERSION = "ember_v3"
 
 DEFAULT_COMPOSITION_FILENAMES = ["Hanford.csv", "hanford.csv", "Hanford.tsv", "hanford.tsv"]
 DEFAULT_ATTRIBUTES_FILENAMES = [

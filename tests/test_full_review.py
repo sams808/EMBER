@@ -375,7 +375,7 @@ class TestReferenceConstantsArePinnedToLiterature:
         literature = {
             "SO4": 96.06, "PO4": 94.97, "NO3": 62.00, "NO2": 46.01,
             "NH3": 17.03, "CN": 26.02, "Free OH": 17.01, "TIC as CO3": 60.01,
-            "Oxalate": 88.02, "Formate": 45.02, "Acetate": 59.04,
+            "Oxalate": 88.02, "Formate": 45.02, "Acetate": 59.04, "Water": 18.02,
         }
         for species, expected in literature.items():
             counts = rd.SPECIES_FORMULAS[species]
@@ -469,3 +469,263 @@ class TestOxideMapEditReachesTheComputation:
         before = oxsci.convert_composition_to_oxides({"Na": 100.0})
         after = oxsci.convert_composition_to_oxides({"Na": 100.0}, {"Na": "Na2O2"})
         assert set(before["Component"]) != set(after["Component"])
+
+
+class TestDatabaseUpdate2026:
+    """Shapes introduced by the 2026 PHOENIX re-export (download.csv):
+    a layer whose rows carry TWO distinct (Volume, Density) cohorts under
+    one (tank, phase, type) label, and a new "Water" kg analyte."""
+
+    def _split_cohort_dataset(self) -> dm.HanfordDataset:
+        """241-AW-102's new shape: one labeled layer, two cohorts. The
+        layer's true mass is the SUM over cohorts (52*1.30 + 2*1.31 kt),
+        not whichever cohort a unique() happens to keep."""
+        dataset = dm.HanfordDataset()
+        dataset.df = dataset._clean_dataframe(pl.DataFrame({
+            "WasteSiteId": ["241-AW-102"] * 4,
+            "Analyte": ["Na", "Fe", "Na", "Fe"],
+            "WastePhase": ["Saltcake Interstitial Liquid"] * 4,
+            "WasteType": ["NA (Liquid)"] * 4,
+            "Inventory": [1000.0, 100.0, 40.0, 4.0],
+            "Units": ["kg"] * 4,
+            "Volume": [52.0, 52.0, 2.0, 2.0],
+            "VolumeUnits": ["kL"] * 4,
+            "ComponentDensity": [1.30, 1.30, 1.31, 1.31],
+            "DensityUnits": ["g/mL"] * 4,
+        }))
+        dataset.report = None
+        return dataset
+
+    def test_split_cohort_layer_denominator_sums_both_cohorts(self):
+        result = run_query(self._split_cohort_dataset(), subject=("element", "Na"),
+                           basis="wt%", group_by=["WasteSiteId"])
+        layer_mass_g = 52.0 * 1.0e6 * 1.30 + 2.0 * 1.0e6 * 1.31
+        expected = (1000.0 + 40.0) * 1000.0 / layer_mass_g * 100.0
+        assert float(result.table["wt_pct"].sum()) == pytest.approx(expected, rel=1e-9)
+
+    def test_split_cohort_layer_volume_sums_both_cohorts(self):
+        result = run_query(self._split_cohort_dataset(), subject=("element", "Na"),
+                           basis="g/L", group_by=["WasteSiteId"])
+        expected = (1000.0 + 40.0) * 1000.0 / ((52.0 + 2.0) * 1000.0)
+        assert float(result.table["g_per_L"].sum()) == pytest.approx(expected, rel=1e-9)
+
+    def test_split_cohort_layer_is_disclosed(self):
+        result = run_query(self._split_cohort_dataset(), subject=("element", "Na"),
+                           basis="wt%", group_by=["WasteSiteId"])
+        assert any("cohort" in w.lower() for w in result.warnings), result.warnings
+
+    def test_single_cohort_layers_are_unchanged_and_silent(self):
+        dataset = dm.HanfordDataset()
+        dataset.df = dataset._clean_dataframe(pl.DataFrame({
+            "WasteSiteId": ["241-A-101"] * 2,
+            "Analyte": ["Na", "Fe"],
+            "WastePhase": ["Supernatant"] * 2,
+            "WasteType": ["T1"] * 2,
+            "Inventory": [1000.0, 100.0],
+            "Units": ["kg"] * 2,
+            "Volume": [100.0] * 2,
+            "VolumeUnits": ["kL"] * 2,
+            "ComponentDensity": [1.25] * 2,
+            "DensityUnits": ["g/mL"] * 2,
+        }))
+        dataset.report = None
+        result = run_query(dataset, subject=("element", "Na"), basis="wt%")
+        expected = 1000.0 * 1000.0 / (100.0 * 1.0e6 * 1.25) * 100.0
+        assert float(result.table["wt_pct"].sum()) == pytest.approx(expected, rel=1e-9)
+        assert not any("cohort" in w.lower() for w in result.warnings)
+
+    def test_water_is_a_registered_species(self):
+        """The 2026 export reports 814 t of "Water" (kg) in 241-AP-103.
+        Unregistered, that mass would be excluded with only a generic
+        warning; registered, its H and O are apportioned like any other
+        species."""
+        assert "Water" in rd.SPECIES_FORMULAS
+        fractions = rd.SPECIES_ELEMENT_MASS_FRACTIONS["Water"]
+        assert fractions["O"] == pytest.approx(16.00 / 18.02, rel=2e-3)
+        assert fractions["H"] == pytest.approx(2.016 / 18.02, rel=2e-3)
+
+    def test_registered_species_is_not_reported_as_unresolvable(self):
+        """"Water" parses to no element at load time (AnalyteClass
+        "unparsed") but IS registered, so its mass reaches H and O by
+        apportionment — the "cannot resolve to elements" warning must not
+        count mass that does reach elements."""
+        dataset = dm.HanfordDataset()
+        dataset.df = dataset._clean_dataframe(pl.DataFrame({
+            "WasteSiteId": ["241-AP-103"] * 2,
+            "Analyte": ["Water", "Na"],
+            "WastePhase": ["Supernatant"] * 2,
+            "WasteType": ["T1"] * 2,
+            "Inventory": [814000.0, 10.0],
+            "Units": ["kg"] * 2,
+        }))
+        dataset.report = None
+        result = run_query(dataset, subject=("element", "H"), basis="kg")
+        expected = 814000.0 * rd.SPECIES_ELEMENT_MASS_FRACTIONS["Water"]["H"]
+        assert float(result.table["Total_kg"].sum()) == pytest.approx(expected, rel=1e-9)
+        assert not any("cannot resolve" in w for w in result.warnings), result.warnings
+
+
+class TestUpdateReviewFindings:
+    """Confirmed by the post-update consistency review (9 findings, 0
+    refuted). The AW-102 stale-cohort and AZ-102 impossible-revision DATA
+    findings have no code fix -- the app's job is honest disclosure."""
+
+    def _split_cohort_dataset(self) -> dm.HanfordDataset:
+        dataset = dm.HanfordDataset()
+        dataset.df = dataset._clean_dataframe(pl.DataFrame({
+            "WasteSiteId": ["241-AW-102"] * 4,
+            "Analyte": ["Na", "Fe", "Na", "Fe"],
+            "WastePhase": ["Saltcake Interstitial Liquid"] * 4,
+            "WasteType": ["NA (Liquid)"] * 4,
+            "Inventory": [1000.0, 100.0, 40.0, 4.0],
+            "Units": ["kg"] * 4,
+            "Volume": [52.0, 52.0, 2.0, 2.0],
+            "VolumeUnits": ["kL"] * 4,
+            "ComponentDensity": [1.30, 1.30, 1.31, 1.31],
+            "DensityUnits": ["g/mL"] * 4,
+        }))
+        dataset.report = None
+        return dataset
+
+    def test_cohort_disclosure_fires_on_every_basis(self):
+        """A multi-cohort label inflates plain totals too (the stale
+        AW-102 cohort books ~26x on kg/Ci/g), so gating the disclosure to
+        concentration bases hid it exactly where it mattered most."""
+        for basis in ("kg", "g"):
+            result = run_query(self._split_cohort_dataset(), subject=("element", "Na"),
+                               basis=basis)
+            assert any("cohort" in w.lower() for w in result.warnings), (basis, result.warnings)
+
+    def test_cohort_disclosure_makes_no_truth_claim(self):
+        """The same PHOENIX pull's volumes export contradicts the summed
+        volume 27x for the real AW-102 layer; the app cannot adjudicate,
+        so the warning must not assert the sum "is that layer's true
+        total"."""
+        for basis in ("kg", "wt%"):
+            result = run_query(self._split_cohort_dataset(), subject=("element", "Na"),
+                               basis=basis)
+            cohort = [w for w in result.warnings if "cohort" in w.lower()]
+            assert cohort and all("true total" not in w for w in cohort), cohort
+
+    def test_water_parses_to_hydrogen_and_oxygen(self):
+        import elements
+        assert elements.parse_analyte_elements("Water") == ["H", "O"]
+
+    def test_water_row_reaches_legacy_surfaces(self):
+        """With the parser alias, the 814 t Water row gets a first parsed
+        element like every other compound, so Tank Explorer and the
+        screening denominators stop silently excluding 27% of AP-103."""
+        import tank_science as tsci
+        dataset = dm.HanfordDataset()
+        dataset.df = dataset._clean_dataframe(pl.DataFrame({
+            "WasteSiteId": ["241-AP-103"] * 2,
+            "Analyte": ["Water", "Na"],
+            "WastePhase": ["Supernatant"] * 2,
+            "WasteType": ["NA (Lower Liquid)"] * 2,
+            "Inventory": [814000.0, 100.0],
+            "Units": ["kg"] * 2,
+        }))
+        dataset.report = None
+        profile = tsci.tank_profile(dataset, ["241-AP-103"], "kg", top_n=10)
+        assert float(profile["Inventory_sum"].sum()) == pytest.approx(814100.0, rel=1e-9)
+
+    def test_pair_mismatch_is_disclosed_when_members_disagree(self):
+        """42 layers report 243/244Cm beside both members and in 27 the
+        pair does NOT equal their sum (78.5 Ci aggregate). The warning
+        asserted equality unconditionally; it must state the measured
+        disagreement instead of a false arithmetic identity."""
+        dataset = dm.HanfordDataset()
+        dataset.df = dataset._clean_dataframe(pl.DataFrame({
+            "WasteSiteId": ["241-B-111"] * 3,
+            "Analyte": ["243/244Cm", "243Cm", "244Cm"],
+            "WastePhase": ["Sludge"] * 3,
+            "WasteType": ["B (Solid)"] * 3,
+            "Inventory": [100.0, 10.0, 24.0],   # members = 0.34x the pair
+            "Units": ["Ci"] * 3,
+        }))
+        dataset.report = None
+        result = run_query(dataset, subject=("element", "Cm"), basis="Ci")
+        text = " ".join(result.warnings).lower()
+        assert "does not equal" in text, result.warnings
+
+    def test_pair_match_is_not_flagged(self):
+        dataset = dm.HanfordDataset()
+        dataset.df = dataset._clean_dataframe(pl.DataFrame({
+            "WasteSiteId": ["241-AN-101"] * 3,
+            "Analyte": ["239/240Pu", "239Pu", "240Pu"],
+            "WastePhase": ["Sludge"] * 3,
+            "WasteType": ["T1"] * 3,
+            "Inventory": [2700.0, 2200.0, 500.0],
+            "Units": ["Ci"] * 3,
+        }))
+        dataset.report = None
+        result = run_query(dataset, subject=("element", "Pu"), basis="Ci")
+        text = " ".join(result.warnings).lower()
+        assert "does not equal" not in text, result.warnings
+
+    def test_legacy_matrix_discloses_unattributable_mass(self):
+        import matrix_query as mq
+        dataset = dm.HanfordDataset()
+        dataset.df = dataset._clean_dataframe(pl.DataFrame({
+            "WasteSiteId": ["241-A-101"] * 2,
+            "Analyte": ["Na", "Aroclor-1254"],   # the second parses to nothing
+            "WastePhase": ["Supernatant"] * 2,
+            "WasteType": ["T1"] * 2,
+            "Inventory": [100.0, 50.0],
+            "Units": ["kg"] * 2,
+        }))
+        dataset.report = None
+        result = mq.legacy_matrix(dataset, unit="kg")
+        assert any("not attributable" in w for w in result.warnings), result.warnings
+
+    def test_mass_warning_populations_are_disjoint(self):
+        """A combined-pair Ci row (no single specific activity, Mass_g
+        null) was counted by BOTH the "set aside" and "not bridgeable"
+        warnings -- one physical row described twice, by contradictory
+        reasons. Bridged means Mass_g is not null."""
+        dataset = dm.HanfordDataset()
+        dataset.df = dataset._clean_dataframe(pl.DataFrame({
+            "WasteSiteId": ["241-C-106"] * 2,
+            "Analyte": ["Ce", "144Ce/Pr"],
+            "WastePhase": ["Sludge (Liquid & Solid)"] * 2,
+            "WasteType": ["NA (Sludge)"] * 2,
+            "Inventory": [5.02, 2.96e-5],
+            "Units": ["kg", "Ci"],
+        }))
+        dataset.report = None
+        result = run_query(dataset, subject=("element", "Ce"), basis="g")
+        set_aside = [w for w in result.warnings if "set aside on the mass basis" in w]
+        assert not any("144Ce/Pr" in w for w in set_aside), set_aside
+        not_bridgeable = [w for w in result.warnings if "not mass-bridgeable" in w]
+        assert any("144Ce/Pr" in w for w in not_bridgeable), result.warnings
+
+    def test_tank_explorer_unattributed_note(self):
+        """Whatever still parses to no element is named, not dropped in
+        silence -- the complement of tank_profile's own filter."""
+        import tank_science as tsci
+        dataset = dm.HanfordDataset()
+        dataset.df = dataset._clean_dataframe(pl.DataFrame({
+            "WasteSiteId": ["241-A-101"] * 2,
+            "Analyte": ["Na", "Aroclor-1254"],
+            "WastePhase": ["Supernatant"] * 2,
+            "WasteType": ["T1"] * 2,
+            "Inventory": [100.0, 50.0],
+            "Units": ["kg"] * 2,
+        }))
+        dataset.report = None
+        note = tsci.unattributed_mass_note(dataset, ["241-A-101"], "kg")
+        assert note is not None and "50" in note and "kg" in note
+
+    def test_tank_explorer_no_note_when_everything_parses(self):
+        import tank_science as tsci
+        dataset = dm.HanfordDataset()
+        dataset.df = dataset._clean_dataframe(pl.DataFrame({
+            "WasteSiteId": ["241-A-101"],
+            "Analyte": ["Na"],
+            "WastePhase": ["Supernatant"],
+            "WasteType": ["T1"],
+            "Inventory": [100.0],
+            "Units": ["kg"],
+        }))
+        dataset.report = None
+        assert tsci.unattributed_mass_note(dataset, ["241-A-101"], "kg") is None

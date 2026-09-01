@@ -123,6 +123,7 @@ class ScreeningTab(QWidget):
         title.setObjectName("SectionTitle")
         top.addWidget(title)
         note = QLabel("Screening metric only; not an official waste classification or glass formulation model.")
+        self.note_label = note
         note.setObjectName("SectionNote")
         top.addWidget(note)
         top.addStretch(1)
@@ -217,6 +218,14 @@ class ScreeningTab(QWidget):
         )
         self._table_views["Screening summary"].set_dataframe(self.summary_df)
         self._update_plot()
+        # Every denominator on this page is built over rows with a parsed
+        # element; whatever parses to none is named beside the static
+        # caveat rather than silently missing from Total_kg_inventory and
+        # every frac_* share (review finding).
+        import tank_science as tsci
+        note = tsci.unattributed_mass_note(self.dataset, self.dataset.available_tanks())
+        base = "Screening metric only; not an official waste classification or glass formulation model."
+        self.note_label.setText(base if note is None else f"{base}  {note}")
         self.app_window.statusBar().showMessage(f"Vitrification summary built for {len(self.summary_df):,} tank(s).")
 
     def _update_plot(self) -> None:

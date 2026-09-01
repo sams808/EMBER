@@ -52,7 +52,7 @@ class TestFingerprint:
         out = prov.dataset_fingerprint(dataset)
         assert len(out["dataset_sha256_head"]) == 64
         assert out["dataset_bytes"] > 0
-        assert out["dataset_rows"] == 46894
+        assert out["dataset_rows"] == 46597  # 2026 PHOENIX re-export
 
     @requires_real_data
     def test_the_hash_distinguishes_a_changed_file(self, tmp_path):

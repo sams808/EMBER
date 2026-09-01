@@ -155,7 +155,11 @@ class TankExplorerPage(QWidget):
             self.plot, self._profile_df, self.value_combo.currentText(),
             f"Tank composition: {label}", top_n=top_n,
         )
-        self.app_window.statusBar().showMessage(f"Tank view updated for {len(tanks)} tank(s).")
+        status = f"Tank view updated for {len(tanks)} tank(s)."
+        self._unattributed_note = tsci.unattributed_mass_note(self.dataset, tanks, unit)
+        if self._unattributed_note:
+            status += "  " + self._unattributed_note
+        self.app_window.statusBar().showMessage(status)
 
     def _export_tables(self) -> None:
         if self._profile_df is None and self._raw_df is None:

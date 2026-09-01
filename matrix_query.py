@@ -70,8 +70,8 @@ def element_totals(
     Two queries: one ungrouped (totals and tank counts, which cannot be
     summed out of a grouped result) and one grouped by Analyte (which
     species carry each element -- more informative under apportionment
-    than it was before, since sulfur genuinely arrives via SO4, sulfide
-    and thiosulfate)."""
+    than it was before, since sulfur genuinely arrives via SO4 and
+    sulfide)."""
     elements = candidate_elements(dataset)
     if not elements:
         return ElementTotals(basis=basis)
@@ -220,7 +220,7 @@ def _unattributable_warning(
     """Mass in scope that reached NO element. The engine's own
     unregistered-species warning only sees rows it can parse as compounds,
     so analytes it cannot resolve at all (Aroclors, ketones, phthalates --
-    515 kg on the shipped dataset, including the entire PCB inventory)
+    ~490 kg on the shipped dataset, including the entire PCB inventory)
     were excluded in total silence. Comparing totals catches every cause,
     including ones nobody has thought of yet.
 
@@ -304,6 +304,24 @@ def legacy_matrix(
             f"min inventory {min_inventory:g} {unit}: rows at or below it were dropped "
             f"before summing, so tank totals exclude them."
         )
+    # Computed directly from the scoped rows, NOT via _unattributable_warning
+    # over long_df: that table is already trimmed to the top-N elements, so
+    # comparing against it would misreport trimmed elements as unattributable.
+    # Before this, the legacy path emitted nothing at all while dropping every
+    # null-Element row -- negligible on the old export (~515 kg), but the 2026
+    # export's 814 t Water row made the silent hole 1,580x bigger overnight.
+    if unit in ("kg", "Ci"):
+        sdf = scoped.require_df().filter(pl.col("Units") == unit)
+        reported = float(sdf.get_column("Inventory").sum() or 0.0)
+        missing = float(
+            sdf.filter(pl.col("Element").is_null()).get_column("Inventory").sum() or 0.0
+        )
+        if reported > 0 and missing > reported * 1e-12:
+            warnings.append(
+                f"{missing:,.4g} {unit} ({100.0 * missing / reported:.2g}% of the reported "
+                f"total) is not attributable to any element — analytes whose formula the "
+                f"parser cannot resolve. Those rows are absent from this matrix."
+            )
 
     return MatrixResult(
         long_df=long_df, wide_df=wide_df, elements=elements,

@@ -121,6 +121,36 @@ def tank_profile(
     )
 
 
+def unattributed_mass_note(
+    dataset: HanfordDataset, tank_ids: Sequence[str], unit_filter: Optional[str] = None,
+) -> Optional[str]:
+    """One sentence naming the inventory tank_profile's own Element filter
+    excludes, or None when everything parses. The EXACT complement of the
+    filter at tank_profile (Element.is_not_null()), so the two cannot
+    drift: whatever that view drops, this names. Before this, the page
+    published per-tank compositions with no hint that rows parsing to no
+    element (a negligible ~0.5 kg of Aroclors on most tanks -- but 27% of
+    241-AP-103 before "Water" gained its parser alias) were simply absent
+    from the table, the chart and the export alike (review finding)."""
+    df = dataset.require_df().filter(pl.col("WasteSiteId").is_in(list(tank_ids)))
+    df = dataset.filter_by_units(df, unit_filter)
+    dropped = df.filter(
+        (pl.col("Inventory") > 0) & pl.col("Element").is_null()
+    )
+    if dropped.is_empty():
+        return None
+    parts = []
+    for unit, sub in sorted(dropped.group_by("Units"), key=lambda kv: kv[0]):
+        total = float(sub["Inventory"].sum())
+        labels = sorted(set(sub["Analyte"].to_list()))
+        shown = ", ".join(labels[:4]) + (" …" if len(labels) > 4 else "")
+        parts.append(f"{total:,.4g} {unit[0] if isinstance(unit, tuple) else unit} ({shown})")
+    return (
+        "Not shown: " + "; ".join(parts) + " — analyte(s) the parser cannot resolve "
+        "to an element are absent from the composition table, chart and export."
+    )
+
+
 def raw_rows_for_tank(
     dataset: HanfordDataset, tank_id: str, unit_filter: Optional[str] = None, limit: int = 5000,
 ) -> pd.DataFrame:

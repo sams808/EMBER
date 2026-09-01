@@ -123,6 +123,10 @@ CHEMISTRY_NAME_ALIASES: Dict[str, List[str]] = {
     "SULFIDE": ["S"],
     "PHOSPHATE": ["P", "O"],
     "HYDROXIDE": ["O", "H"],
+    # First appears in the 2026 BBI re-export (one 814 t kg row). Without
+    # an alias the row parsed to NO element and every legacy first-element
+    # surface silently dropped 27% of its tank's kg inventory.
+    "WATER": ["H", "O"],
     "FLUORIDE": ["F"],
     "CHLORIDE": ["Cl"],
     "BROMIDE": ["Br"],
