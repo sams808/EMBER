@@ -42,7 +42,7 @@ databases:
 by, affiliated with, or endorsed by PNNL or the U.S. Department of
 Energy.**
 
-Developed by Sam Soudani, in the McCloy group at Washington State
+Developed by Sami Soudani, in the McCloy group at Washington State
 University, with support from the U.S. Department of Energy (DOE).
 `github.com/sams808/EMBER` · MIT License.
 
@@ -977,7 +977,7 @@ regulatory determinations.
 
 ## 18. Credits
 
-Developed by Sam Soudani, in the McCloy group at Washington State
+Developed by Sami Soudani, in the McCloy group at Washington State
 University, with support from the U.S. Department of Energy (DOE).
 `github.com/sams808/EMBER` · MIT License.
 

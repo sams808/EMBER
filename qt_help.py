@@ -80,7 +80,7 @@ ABOUT_HTML = f"""
 <h2 style="margin-bottom:2px;">{APP_NAME} <span style="font-size:14px; color:#8a9099; font-weight:normal;">v{APP_VERSION}</span></h2>
 <p style="color:#4a4f58; margin-top:0;"><i>{APP_TAGLINE}</i></p>
 
-<p>Developed by <b>Sam Soudani</b>, in the <b>McCloy</b> group at
+<p>Developed by <b>Sami Soudani</b>, in the <b>McCloy</b> group at
 Washington State University, with support from the
 U.S.&nbsp;Department&nbsp;of&nbsp;Energy&nbsp;(DOE).</p>
 <p><a href="https://github.com/sams808/EMBER">github.com/sams808/EMBER</a>

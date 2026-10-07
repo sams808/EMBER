@@ -106,4 +106,4 @@ MIT — see [`LICENSE`](LICENSE). If you use Ember in published work, a
 citation of the repository is appreciated, alongside the PHOENIX data
 citation above.
 
-Sam Soudani — McCloy group, Washington State University.
+Sami Soudani — McCloy group, Washington State University.
