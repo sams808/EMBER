@@ -5,7 +5,8 @@ from PySide6.QtWidgets import QMainWindow
 import data_model as dm
 import matrix_query as mq
 import reference_data as rd
-from qt_heatmap import MODES, HeatmapPage
+import qt_heatmap
+from qt_heatmap import MODE_LABELS, MODES, HeatmapPage
 
 
 def _make_page(qtbot):
@@ -54,7 +55,7 @@ class TestHeatmapPage:
         page = _make_page(qtbot)
         page.on_dataset_changed(sample_dataset)
         for mode in MODES:
-            page.mode_combo.setCurrentText(mode)
+            page.set_mode(mode)
             page.run()
             qtbot.wait(20)
 
@@ -139,7 +140,7 @@ class TestAttributionMigration:
         page.run()
         qtbot.wait(20)
         assert not page.warnings_label.isHidden()
-        assert "min inventory" in page.warnings_label.text()
+        assert "min inventory" in page.warnings_label.text().lower()
 
 
 class TestGlobalScope:
@@ -207,7 +208,7 @@ class TestModesRenderThroughTheGrammar:
     def test_fraction_mode_normalizes_rows(self, qtbot):
         page = _make_page(qtbot)
         page.on_dataset_changed(_species_dataset())
-        page.mode_combo.setCurrentText("fraction")
+        page.set_mode("fraction")
         page.run()
         qtbot.wait(20)
         import numpy as np
@@ -219,7 +220,7 @@ class TestModesRenderThroughTheGrammar:
     def test_log_mode_declares_itself_on_the_colorbar(self, qtbot):
         page = _make_page(qtbot)
         page.on_dataset_changed(_species_dataset())
-        page.mode_combo.setCurrentText("log10_inventory")
+        page.set_mode("log10_inventory")
         page.run()
         qtbot.wait(20)
         assert "log10" in page.plot.figure.axes[1].get_ylabel()
@@ -227,9 +228,122 @@ class TestModesRenderThroughTheGrammar:
     def test_switching_mode_redraws_without_rerunning(self, qtbot):
         page = _make_page(qtbot)
         page.on_dataset_changed(_species_dataset())
-        page.mode_combo.setCurrentText("inventory")
+        page.set_mode("inventory")
         page.run()
         qtbot.wait(20)
-        page.mode_combo.setCurrentText("fraction")  # signal-driven redraw
+        page.set_mode("fraction")  # signal-driven redraw
         qtbot.wait(20)
         assert "fraction of row total" in page.plot.figure.axes[1].get_ylabel()
+
+
+class TestPagePass:
+    """What the interface pass added: wording, readable choices, the notes
+    banner, the cell-to-row link."""
+
+    def test_header_and_primary_action_read_as_the_house_wording(self, qtbot):
+        page = _make_page(qtbot)
+        assert page.header.title_label.text() == "Heatmaps"
+        assert page.export_btn.text() == "Export..."
+        assert page.run_btn.text() == "Run" and page.run_btn.objectName() == "Primary"
+
+    def test_scale_choices_are_shown_in_words_and_kept_as_identifiers(self, qtbot):
+        page = _make_page(qtbot)
+        shown = [page.mode_combo.itemText(i) for i in range(page.mode_combo.count())]
+        assert shown == [MODE_LABELS[key] for key in MODES]
+        assert not any("_" in text for text in shown)
+        assert [page.mode_combo.itemData(i) for i in range(page.mode_combo.count())] == list(MODES)
+        assert page.mode_key() == "log10_inventory"
+
+    def test_export_records_the_scale_by_its_identifier(self, qtbot, tmp_path):
+        import pandas as pd
+        page = _make_page(qtbot)
+        dataset = _species_dataset()
+        dataset.output_root = tmp_path
+        page.on_dataset_changed(dataset)
+        page.set_mode("fraction")
+        page.run()
+        qtbot.wait(20)
+        page._export_inputs()
+        out_dir = next(iter(tmp_path.glob("heatmap_kg_*")))
+        params = pd.read_csv(out_dir / "heatmap_parameters.csv").set_index("parameter")
+        assert params.loc["mode", "value"] == "fraction"
+
+    def test_chart_is_on_the_left_and_tables_on_the_right(self, qtbot):
+        page = _make_page(qtbot)
+        assert page.splitter.widget(0) is page.plot
+        assert page.splitter.widget(1) is page.tables
+
+    def test_idle_and_empty_states_say_what_happened(self, qtbot):
+        page = _make_page(qtbot)
+        qtbot.wait(20)
+        assert "No result yet" in [t.get_text() for t in page.plot.ax.texts]
+        page.run()                                  # no dataset: a sentence, no dialog
+        assert "no dataset" in page.app_window.statusBar().currentMessage()
+        page.on_dataset_changed(_species_dataset())
+        page.scope.set_filter("WastePhase", ["Nonexistent"])
+        page.run()
+        qtbot.wait(20)
+        assert "Nothing to show" in [t.get_text() for t in page.plot.ax.texts]
+
+    def test_run_button_says_update_when_the_controls_left_the_matrix(self, qtbot):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(_species_dataset())
+        assert page.run_btn.text() == "Run"
+        page.run()
+        qtbot.wait(20)
+        assert page.run_btn.text() == "Run"
+        page.set_mode("inventory")                  # a display change: nothing to recompute
+        assert page.run_btn.text() == "Run"
+        page.attribution_combo.setCurrentText(mq.AS_REPORTED)
+        assert page.run_btn.text() == "Update"
+        page.run()
+        qtbot.wait(20)
+        assert page.run_btn.text() == "Run"
+        page.top_n_spin.setValue(12)
+        assert page.run_btn.text() == "Update"
+
+    def test_clicking_a_cell_selects_its_row_of_the_long_table(self, qtbot):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(_species_dataset())
+        page.run()
+        qtbot.wait(20)
+        page.tables.setCurrentWidget(page.notes_view)
+        page._on_mark_clicked({"row": "241-AN-104", "column": "N", "value": 1.0})
+        assert page.tables.currentWidget() is page.long_view
+        selected = page.long_view.selectedIndexes()
+        assert selected
+        picked = page.long_view.dataframe().iloc[selected[0].row()]
+        assert (picked["WasteSiteId"], picked["Element"]) == ("241-AN-104", "N")
+
+    def test_clicking_a_blank_cell_says_so_and_selects_nothing(self, qtbot):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(_species_dataset())
+        page.run()
+        qtbot.wait(20)
+        page.long_view.table.clearSelection()
+        page._on_mark_clicked({"row": "241-AN-104", "column": "Fe"})    # that tank reports no iron
+        assert not page.long_view.selectedIndexes()
+        assert "no Fe row" in page.app_window.statusBar().currentMessage()
+
+    def test_banner_carries_every_warning_without_an_alarm_glyph(self, qtbot):
+        from qt_explorer import plain_note
+        page = _make_page(qtbot)
+        page.on_dataset_changed(_species_dataset())
+        page.min_inv_spin.setValue(1.0)
+        page.run()
+        qtbot.wait(20)
+        assert list(page.warnings_label.notes()) == [plain_note(w) for w in page._result.warnings]
+        assert "⚠" not in page.warnings_label.summary_label.text()
+        # The Notes tab keeps the engine's exact text.
+        notes = page.notes_view.dataframe()
+        assert list(notes.loc[notes["kind"] == "warning", "text"]) == list(page._result.warnings)
+
+    def test_a_late_result_of_a_superseded_build_is_discarded(self, qtbot):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(_species_dataset())
+        page.run()
+        qtbot.wait(20)
+        standing = page._result
+        late = qt_heatmap._Outcome(token=page._run_token - 1, params={}, result=mq.MatrixResult())
+        page._on_run_done((late, ()))
+        assert page._result is standing

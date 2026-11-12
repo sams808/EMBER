@@ -75,7 +75,7 @@ class TestNoMeasurementIsNotZero:
     def test_wide_matrix_matches_what_the_figure_paints(self, qtbot):
         page = _page(qtbot)
         page.on_dataset_changed(_sparse_dataset())
-        page.mode_combo.setCurrentText("inventory")
+        page.set_mode("inventory")
         page.run()
         qtbot.wait(20)
         wide = page.wide_view.dataframe().set_index("WasteSiteId")
@@ -177,7 +177,7 @@ class TestFigureLabelsMatchTheDataDrawn:
         assert page._result.value_column == "Total_kg"
 
         page.unit_combo.setCurrentText("Ci")      # not wired to a rebuild
-        page.mode_combo.setCurrentText("inventory")  # wired -> redraws
+        page.set_mode("inventory")  # wired -> redraws
         qtbot.wait(20)
         title = (page.plot.figure.get_suptitle() or "") + page.plot.ax.get_title()
         assert "Ci" not in title, (
@@ -193,7 +193,7 @@ class TestFigureLabelsMatchTheDataDrawn:
         qtbot.wait(20)
 
         page.attribution_combo.setCurrentText(mq.APPORTIONED)
-        page.mode_combo.setCurrentText("inventory")
+        page.set_mode("inventory")
         qtbot.wait(20)
         assert mq.AS_REPORTED in page.plot.ax.get_title(), (
             "the figure claims apportioned values while drawing as-reported ones"

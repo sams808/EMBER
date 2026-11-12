@@ -27,7 +27,8 @@ class TestTankAttributesPage:
         page = _make_page(qtbot)
         page.on_dataset_changed(sample_dataset)
         qtbot.wait(20)
-        page.category_combo.setCurrentText("TankSystem")
+        # The combo shows readable labels; the column name is its item data.
+        page.category_combo.setCurrentIndex(page.category_combo.findData("TankSystem"))
         qtbot.wait(20)
         audit = page._table_views["Category audit"].dataframe()
         assert set(audit["TankSystem"]) == {"SST", "DST"}

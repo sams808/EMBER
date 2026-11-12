@@ -11,8 +11,9 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
 import overview_science as osci
@@ -28,30 +29,42 @@ class DebugPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(16)
 
         top = QHBoxLayout()
-        title = QLabel("Debug / Export")
-        title.setObjectName("SectionTitle")
-        top.addWidget(title)
-        note = QLabel("Send the exported bundle instead of the full source CSV when something needs debugging.")
-        note.setObjectName("SectionNote")
-        top.addWidget(note)
-        top.addStretch(1)
-        export_btn = QPushButton("Export global debug bundle")
-        export_btn.setObjectName("Primary")
-        export_btn.clicked.connect(self.export_bundle)
-        top.addWidget(export_btn)
+        top.setSpacing(8)
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        title = QLabel("Diagnostics")
+        title.setObjectName("PageTitle")
+        text.addWidget(title)
+        # Wrapping, and no width of its own: a sentence must not set the
+        # width of the window it sits in.
+        note = QLabel("The session log, live. To report a problem, export the diagnostics bundle and send "
+                      "it instead of the source data file.")
+        note.setObjectName("PageSubtitle")
+        note.setWordWrap(True)
+        note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        text.addWidget(note)
+        top.addLayout(text, 1)
+        clear_btn = QPushButton("Clear log")
+        clear_btn.setObjectName("Secondary")
+        clear_btn.clicked.connect(self.clear_log)
+        top.addWidget(clear_btn, 0, Qt.AlignBottom)
         open_btn = QPushButton("Open output folder")
         open_btn.clicked.connect(self.open_output)
-        top.addWidget(open_btn)
-        clear_btn = QPushButton("Clear log")
-        clear_btn.clicked.connect(self.clear_log)
-        top.addWidget(clear_btn)
+        top.addWidget(open_btn, 0, Qt.AlignBottom)
+        export_btn = QPushButton("Export diagnostics bundle")
+        export_btn.setObjectName("Primary")
+        export_btn.setToolTip("Write the log, the dataset summary and the environment to the output folder.")
+        export_btn.clicked.connect(self.export_bundle)
+        top.addWidget(export_btn, 0, Qt.AlignBottom)
         root.addLayout(top)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
+        self.log_view.setPlaceholderText("Nothing logged yet in this session.")
         root.addWidget(self.log_view, 1)
 
         logger = self.app_window.status_logger

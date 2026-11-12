@@ -115,7 +115,10 @@ class TestPlotWidgetAvailableContentHeightInches:
         try:
             available = panel.available_content_height_inches()
             assert available is not None
-            assert 0 < available < 1000 / panel.figure.dpi
+            # Inches per logical pixel: matplotlib scales the figure's dpi
+            # by the screen's pixel ratio.
+            logical_dpi = panel.figure.dpi / panel.canvas.device_pixel_ratio
+            assert 0 < available < 1000 / logical_dpi
         finally:
             panel.hide()
             qtbot.wait(20)  # settle before qtbot's teardown deletes the widget
@@ -183,11 +186,15 @@ class TestFormatCell:
     def test_nan_float(self):
         assert _format_cell(float("nan")) == ""
 
-    def test_float_uses_5_sig_figs(self):
-        assert _format_cell(1234567.891) == "1.2346e+06"
+    def test_large_float_is_written_in_full_with_separators(self):
+        assert _format_cell(1234567.891) == "1,234,568"
 
-    def test_small_float(self):
-        assert _format_cell(0.00012345) == "0.00012345"
+    def test_small_float_goes_scientific_below_a_thousandth(self):
+        assert _format_cell(0.00012345) in ("1.234e-4", "1.235e-4")     # binary rounding of the 5th digit
+        assert _format_cell(0.012345) == "0.01235"
+
+    def test_float_has_about_four_significant_figures(self):
+        assert _format_cell(123.456) == "123.5"
 
     def test_list_joined(self):
         assert _format_cell(["A", "B", "C"]) == "A; B; C"
@@ -236,6 +243,7 @@ class TestDataFrameTableModel:
     def test_header_data(self, qtbot):
         model = DataFrameTableModel(self._sample_df())
         assert model.headerData(0, Qt.Horizontal) == "Element"
+        assert model.headerData(1, Qt.Horizontal) == "Total inventory"      # readable, not the identifier
         assert model.headerData(1, Qt.Vertical) == "1"
 
     def test_set_dataframe_resets_model(self, qtbot):

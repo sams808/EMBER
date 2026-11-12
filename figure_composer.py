@@ -274,9 +274,11 @@ class ComposedPanels:
 def _draw_panel_label(subfig, index: int, label_style: str, label_fontsize: int) -> None:
     label = panel_label(index, label_style)
     if label:
+        # The gid names the letter for the layout pass (plot_helpers.
+        # PANEL_LABEL_GID): it is never wrapped, resized or hidden.
         subfig.text(
             0.0, 0.99, label, transform=subfig.transSubfigure, fontsize=label_fontsize,
-            fontweight="bold", va="top", ha="left", color="black",
+            fontweight="bold", va="top", ha="left", color="black", gid="ember-panel-label",
         )
 
 
@@ -351,7 +353,12 @@ def compose_figure(
         # (removed from the figure's axes list, but the Python reference
         # still exists), leaving show_message() drawing into an axes that's
         # no longer actually part of the figure.
-        panel.show_message('No panels yet -- click "-> Figure Composer" on any plot to add one.')
+        show_empty = getattr(panel, "show_empty", None)
+        if callable(show_empty):
+            show_empty("No panels yet",
+                       'Use "Send to Figure Composer" on the toolbar of any chart to add it here.')
+        else:
+            panel.show_message('No panels yet: use "Send to Figure Composer" on any chart to add one.')
         return None
     panel.figure.clear()
     _prune_measure_cache(items)

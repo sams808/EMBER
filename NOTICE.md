@@ -124,54 +124,105 @@ The nav sidebar has 9 workspaces:
 4. **Tank Attributes**
 5. **Tank Explorer**
 6. **Heatmaps**
-7. **Correlations** — Quick Scan / Association Workbench (kg) / Structure sub-tabs
-8. **Vitrification** — Screening / Oxide Chemistry / Candidate Search / Blend Partners sub-tabs
+7. **Correlations** — Cross-correlation / Quick Scan / Association Workbench (kg) / Structure sub-tabs
+8. **Vitrification** — Screening / Oxide Chemistry / Candidate Search / Blend Partners / Loading rules sub-tabs
 9. **Figure Composer** — combine any of the plots above into one multi-panel publication figure
 
-**Debug / Export** (§11) isn't a workspace — it's a troubleshooting utility
-(live log viewer, one-click debug-bundle export), reached from **Help →
-Debug / Export…** instead of the nav rail.
+**Debug / Export** (§11) is not a workspace: it is a troubleshooting
+utility (live log viewer, debug-bundle export), reached from **Help →
+Debug / Export…**.
 
-Each workspace keeps only its 2-4 always-needed controls visible; anything
-else (thresholds, score weights, per-plot-type tuning) is collapsed under
-an **"Advanced options"** toggle — click it to expand, nothing is ever
-removed, just one click deeper. A small **`?`** button on each workspace
-opens that workspace's own section of this notice, so you don't have to
-scroll to find it. **Help → Getting Started…** re-opens the "what are you
-trying to do?" picker shown on first launch, any time.
+**The window.** A header band carries the name of the application, a
+summary of the loaded dataset (file, records, tanks, publication years and
+decay dates), a search box, Help and the light/dark switch. The sidebar
+lists the nine workspaces in four groups (Explore, Tanks, Analyze, Report)
+and can be collapsed to icons (Ctrl+B). Under the header, the scope strip
+(§3) filters every scope-aware workspace at once. The status bar reports
+what the last action did, and shows a busy indicator while a computation
+runs in the background; the window stays responsive meanwhile.
 
-Most plots can be saved directly via the plot panel's own toolbar
-(PNG/PDF/SVG, pan/zoom). Every workspace also exports the actual data
-tables behind its plots as CSV. This matters in two ways: first, when a
-plot looks wrong, you don't need to send the giant source CSV — export the
-debug bundle or the workspace-specific tables and send those; second, the
-exported tables are the right starting point if you want to reproduce a
-plot in your own analysis software.
+**Every workspace is laid out the same way.** A title with one sentence
+saying what the page answers; on the right of the title, **Export...** and
+a **`?`** button that opens that workspace's own section of this notice; a
+row with the few controls that are always needed, ending with **Run**
+(which reads **Update** when the controls no longer match the result on
+screen); then the result, as a chart beside its tables. Controls that are
+needed rarely (thresholds, score weights, per-plot tuning) are collapsed
+under **Advanced options**. **Help → Getting Started…** re-opens the picker
+shown on first launch.
 
-Every `PlotWidget` (the panel each plot renders into) also has a **"→
-Figure Composer"** button next to its toolbar — click it on any plot you
-want to include in a combined figure, then switch to the Figure Composer
-workspace to arrange, label, and export the panel grid (§13).
+**Notes that qualify a result.** When a result depends on something that
+was set aside, converted or left out (activity converted to mass, mixed
+decay dates, analytes that cannot be attributed to an element, records
+without an assigned uncertainty), one line above the result says how many
+such notes apply; **Show all** lists them in place. The same notes, in
+full, are in the workspace's Notes tab and in every export. They are
+statements about the data, not error messages.
+
+**Charts.**
+- Pointing at a bar, a point, a line vertex or a heat-map cell names it
+  and gives its value with its unit, in a tooltip and in the line under
+  the chart.
+- A click on a mark selects the row it was drawn from, where the page has
+  a matching table.
+- A double click on anything that stands for a tank (a bar, a point, a
+  disc on the tank-farm map, a table row) opens that tank in the Tank
+  Explorer (§8). The right-click menu offers the same, and copies the
+  value or the label.
+- The chart toolbar has home / back / forward, pan and zoom, **Send to
+  Figure Composer** (§13) and **Export…** (PNG, SVG or PDF at 300 dpi).
+
+**Tables.** Each table has a filter box (Ctrl+F) that keeps the rows
+containing the typed text, a row count, readable column headers (the
+column's name in the exported file is in the header's tooltip), numbers
+formatted to a common precision and sorted by value. Right-click copies a
+cell or the selection at full precision, or exports the table as CSV. An
+empty table says what will appear in it.
+
+**Search** (Ctrl+K, or the box in the header) finds tanks, elements,
+analytes and workspaces: a tank opens its profile, an element or analyte
+opens in the Element Explorer, a workspace is brought to the front.
+
+Every workspace also exports the data tables behind its charts as CSV.
+When a chart looks wrong, the exported tables (or the debug bundle) are
+what to send, not the source CSV; they are also the right starting point
+for reproducing a chart in other software.
 
 ---
 
-## 3. Top toolbar
+## 3. Menus and the scope strip
 
-- **Load local CSVs** — auto-detects `Hanford.csv`/`Tank_attributes.csv`
-  next to the app (or in the current folder). Runs automatically on
-  startup too.
-- **Load CSV/Parquet…** — opens a file picker for any supported file.
-- **Reload** — reloads the currently loaded file (F5). Use after replacing
-  the input file on disk.
-- **Use parquet cache** — reuses a cleaned Parquet cache if one already
-  exists next to the source CSV, for much faster reloads (loading the raw
-  46,597-row CSV and re-parsing every analyte takes noticeably longer than
-  reading the cache).
-- **Refresh cache** — ignores any existing cache and rebuilds it from the
-  original CSV. Use after the source CSV changes, or if you suspect the
-  cache is stale (different schema version, etc.).
-- **Open output folder** — opens the folder (`ember_outputs/` next to the
-  app) where every workspace writes its exports.
+**File**
+- **Open data file…** opens a file picker for any supported file (CSV or
+  Parquet).
+- **Open default dataset** finds `Hanford.csv` / `Tank_attributes.csv` next to
+  the app (or in the current folder). It also runs at startup.
+- **Reload** (F5) reloads the current file; use it after replacing the
+  input file on disk.
+- **Open project… / Save project…** (§20), **Export current view…**
+  (Ctrl+E, the same as the page's own Export...).
+
+**Data**
+- **Use parquet cache** reuses a cleaned Parquet cache if one exists next
+  to the source CSV: reading the cache is much faster than parsing the
+  46,597-row CSV again.
+- **Refresh cache** ignores an existing cache and rebuilds it from the
+  CSV. Use it after the source CSV changes.
+- **Open output folder** opens `ember_outputs/` next to the app, where
+  every workspace writes its exports.
+
+**View** lists the workspaces, the guided questions (§19), Search, Collapse
+sidebar and Dark mode. **Help** holds Getting Started, this notice (F1),
+About, and Debug / Export.
+
+**The scope strip** sits under the header: Farm, Waste phase, Waste type
+and SST/DST. A choice there applies to every workspace that uses the
+scope (Overview, Query, Element Explorer, Heatmaps, Cross-correlation,
+Loading rules), and the scope a result was computed under is written on
+its chart, in its Notes and in its export. A workspace that is not on
+screen is not recomputed when the scope changes; it is brought up to date
+when it is next opened. On a workspace that does not use the scope, the
+strip says so instead of showing selectors that would do nothing.
 
 ---
 
@@ -249,13 +300,46 @@ contain, so those two are correctly added together.
 
 ## 5. Overview
 
-A first sanity check of the loaded dataset: row/column counts, a units
-audit (which units appear and how many rows use each), a missing-value
-audit, waste-phase/type/farm breakdowns, and a "top elements by inventory"
-bar chart (Top N adjustable, capped in height to whatever's visible in the
-panel so labels stay legible even at Top N = 40+). **Check the units audit
-before trusting anything downstream** — if a unit you don't expect shows
-up, stop and investigate before building on it.
+The landing page, titled **Site overview**: the loaded dataset at a
+glance, a map of the tank farms, and the dataset audit tables.
+
+**Headline figures.** Tanks (single-shell and double-shell, when the tank
+attributes are loaded), waste volume, records and waste layers, analytes
+and elements, sodium, and the activity of ¹³⁷Cs plus ⁹⁰Sr. The activity
+tile is the sum of those two nuclides and not a total activity: a total
+would add daughters and gross-alpha entries to the nuclides they already
+describe. All figures follow the scope strip; the tooltip of a tile gives
+its full wording.
+
+**Tank farms.** Each tank is a disc, grouped by farm and by area (200
+West, 200 East). The arrangement is schematic: tanks are grouped by farm,
+not drawn to scale or at their surveyed positions. A ring marks a
+double-shell tank; a small disc is a tank holding less than 100 kL of
+waste; a hollow disc has no record of the chosen quantity (unreported is
+not shown as zero).
+- **Colour by** chooses the quantity: waste volume, or any element,
+  analyte or nuclide the dataset reports (type to search).
+- **Basis** chooses how it is expressed: inventory (kg, with activity
+  converted to mass where a layer reports only activity), activity (Ci),
+  mol per mol Na, wt% of waste, or g/L. The last three are concentrations
+  and compare tanks of different sizes fairly.
+- **Scale** chooses the colour classes: quantile classes (equal numbers of
+  tanks per class; the default, robust to a few extreme tanks),
+  logarithmic or linear.
+- Pointing at a disc names the tank, its farm and type, its waste volume,
+  the value and its rank. A click selects it (Ctrl+click adds to the
+  selection); a double click opens the tank in the Tank Explorer.
+
+**Ranked tanks** lists the same quantity, largest first, with a bar per
+row. The list and the map are linked both ways: selecting on one selects
+on the other. With several tanks selected, **Compare in Tank explorer**
+opens them side by side.
+
+**Dataset tables** (below the map) are the audit of the data as loaded:
+units in use and rows per unit, missing values, breakdowns by waste phase,
+waste type and farm, and the top elements and analytes with a chart.
+**Check the units audit before trusting anything downstream**: an
+unexpected unit is a reason to stop and look.
 
 **Top elements** comes from the query engine (§19), so this page agrees
 with Heatmaps (§9) about what the waste contains: each element receives
@@ -264,11 +348,12 @@ therefore counts the species that carry the element — sulfur genuinely
 arrives via SO₄ *and* sulfide — rather than being a property of one
 label.
 
-The **Unit** picker sets the basis for that table. `kg` and `Ci` keep a
-single reported unit; **`All` means grams**, with curie rows bridged onto
-the same mass axis through ICRP-107 specific activities. It does *not*
-rank kilograms against curies, which compares nothing. (The other tables
-on this page are audits of the data as reported, and are unaffected.)
+The **Basis** picker of the tables sets the unit for that ranking. `kg`
+and `Ci` keep a single reported unit; **`All` means grams**, with curie
+rows bridged onto the same mass axis through ICRP-107 specific
+activities. It does *not* rank kilograms against curies, which compares
+nothing. (The other tables on this page are audits of the data as
+reported, and are unaffected.)
 
 ---
 
@@ -322,11 +407,26 @@ question (e.g. "how many double-shell tanks are there").
 
 ## 8. Tank Explorer
 
-The inverse of Element Explorer: select one or more tanks (filterable by
-farm) and inspect their full composition, the **raw, unparsed rows**
-behind that composition (the single most useful place to check the §4.2
-element-attribution rule when a number looks off), and a grouped
-composition plot comparing the selected tanks side by side.
+One tank as a profile, or several tanks side by side. A tank can be
+opened from anywhere: a double click on a map disc, a chart mark or a
+table row that stands for it, or the search box.
+
+**One tank** reads top to bottom: its name with farm, shell type,
+capacity, integrity and status (from the tank attributes); headline
+figures (waste volume, waste layers, sodium, ¹³⁷Cs and ⁹⁰Sr); the waste
+layers it holds, with volume and density; its place on the tank-farm
+schematic; and its composition as bars on a logarithmic axis, with the
+full composition table and the **raw, unparsed rows** behind it in the
+neighbouring tabs. The raw rows are the single most useful place to check
+the §4.2 element-attribution rule when a number looks off.
+
+**Several tanks** (select them in the list, filtered by farm or by typing
+part of a name) are compared element by element. Up to six tanks are
+drawn as bars per element; more are drawn as a range.
+
+**Basis** chooses the unit (kg or Ci); Advanced options hold the number of
+elements on the chart and the choice between inventory and the share of
+each tank's own inventory.
 
 ## 9. Heatmaps
 
@@ -355,10 +455,13 @@ apportioned attribution multiplies each element's total by:
 | C | ×0.29 | carbonate and TOC |
 | Na, Al, Fe, Cr, … | ×1.00 | reported as bare elements — unchanged |
 
-Three value modes: **inventory** (as-is), **log10_inventory** (zeros
-become blank cells — log10 of zero doesn't exist), and **fraction** (each
+The **Scale** selector offers three views of the same matrix:
+**Inventory** (as-is), **Log10 of inventory** (zeros become blank cells —
+log10 of zero doesn't exist), and **Fraction of the tank's total** (each
 tank's row divided by its own total, i.e. composition rather than
-amount). The colorbar states which transform is active.
+amount). The colorbar states which transform is active, and exports
+record it as `inventory`, `log10_inventory` or `fraction`. A click on a
+cell selects that tank and element in the Long table.
 
 Restricted to the top-N elements by total (adjustable) to stay readable,
 with any omission stated on the figure; the figure's own size scales with
@@ -373,18 +476,30 @@ both raises a warning rather than quietly ignoring the setting.*
 
 ## 10. Correlations
 
-Three sub-tabs, all built on the same underlying tank×element pivot
-(`element_inventory_matrix`) so results between them are directly
-comparable.
+Four sub-tabs. **Cross-correlation** (§10.4), the first tab, is built on
+the query engine (§19): it works on concentrations, accepts species and
+radionuclides alongside elements, and is the only Correlations sub-tab
+that honors the global scope bar. The other three — Quick Scan,
+Association Workbench (kg) and Structure — are built on one
+tank×element inventory pivot (`element_inventory_matrix`), so results
+between them are directly comparable; they always use the whole
+dataset, and the scope bar is hidden while one of them is showing.
 
 ### 10.1 Quick Scan
 
-A **target-element scan** (how does one element of interest correlate with
-every other element across tanks), a **dual/triple pairwise correlation**
-(a specific handful of elements plotted against each other), and a
-**full correlation-matrix heatmap** (lower-triangle only — a correlation
-matrix is symmetric about its diagonal, so the upper triangle is pure
-redundancy and only makes the plot harder to read).
+The **Correlate** selector chooses one of three questions, and **Run**
+answers it: **One element against all others** (a target-element scan:
+how does one element of interest correlate with every other element
+across tanks), **Two or three elements** (a specific handful of elements
+plotted against each other), and **Every pair (heat map)** (the full
+correlation matrix, lower triangle only — a correlation matrix is
+symmetric about its diagonal, so the upper triangle is pure redundancy
+and only makes the plot harder to read).
+
+Quick Scan works on one reported unit at a time (**Basis**). An element
+that has no inventory in the chosen unit is named in the note above the
+result together with the unit it is reported in: cesium, for example, is
+reported only as activity, so it is scanned on the Ci basis.
 
 Controls that change what the correlation is actually measuring:
 
@@ -456,17 +571,152 @@ New capability, no equivalent in earlier versions of this tool:
 - **Element-association network graph** — nodes sized by total kg, edges
   thresholded by minimum |r| and minimum Jaccard co-presence (both
   user-adjustable), edge color by correlation sign.
-- **Export interactive HTML** — writes the correlation heatmap, PCA
+- **Export... → Interactive HTML views** — writes the correlation heatmap, PCA
   scatter, and network graph as self-contained interactive Plotly HTML
   files (the JavaScript is embedded, not loaded from a CDN, so they work
   fully offline — useful for sharing on a network without internet access)
   and opens the folder.
 
+### 10.4 Cross-correlation
+
+The first sub-tab. It answers one question: across the tank farm, which
+components occur *together*? Enter a comma-separated list of components
+— elements, species such as `SO4`, or radionuclides such as `129I` — or
+fill it from a preset, choose a basis and a level, and press **Run**. The
+result is a correlation matrix, the pair table behind it, and the tables
+needed to judge how far each coefficient can be trusted.
+
+**Basis — what is being correlated.**
+
+| Basis | Meaning | What it compares |
+|---|---|---|
+| `mol/mol Na` *(default)* | moles of the component per mole of sodium in the same layer | composition; normalizing to sodium, the dominant cation of the waste, removes both the amount of waste and its water content |
+| `wt%` | grams per 100 g of layer mass (layer volume × density) | composition by mass; follows the water content of the layer |
+| `g/L` | grams per liter of layer volume | composition by volume; same caveat |
+| `kg` | inventory, curie rows bridged to mass | *amount*, not composition — see below |
+
+**Why inventories all correlate.** Every component scales with how much
+waste a tank holds: a large tank has more fluoride, more sulfate and more
+chromium than a small one, whatever its chemistry. On the `kg` basis the
+matrix therefore describes tank size. With the default component list on
+the bundled dataset, all 28 `kg` pairs are positive at either level
+(Spearman 0.37 to 0.92 across tanks, 0.17 to 0.92 across layers); on
+`mol/mol Na`, across layers, the same 28 pairs run from −0.50 to +0.69,
+and only then does the sign of a coefficient say something about
+chemistry. The `kg` basis is kept for comparison with the other
+sub-tabs, not as a starting point.
+
+**Level.** A *waste layer* is one (tank, waste phase, waste type) entry
+of the inventory — the level at which a composition is actually stated,
+and the default. A *tank* sums its layers, so a tank holding saltcake over
+sludge averages two unrelated chemistries. At the layer level the
+correlation can be restricted to one **phase family** (Supernatant,
+Saltcake or Sludge) under Advanced options.
+
+**Why iodine and selenium are entered as `129I` and `79Se`.** A kg-only
+matrix cannot hold either element. Iodine is reported only as the
+radionuclide ¹²⁹I, in curies; no stable-iodine mass exists in the
+inventory. Selenium is reported site-wide as ⁷⁹Se in curies, and as an
+elemental mass in only part of the layers (153 layers carry a reported
+mass and 383 only the nuclide, on the bundled dataset). The engine
+converts curies to grams with ICRP-107 specific activities (§19), which
+is what lets a radionuclide sit beside sulfate in one matrix. Naming the
+nuclide gives one consistently defined quantity in every layer. Naming
+the element `Se` instead mixes two different quantities — a reported
+total where one exists and, elsewhere, the ⁷⁹Se-implied mass, which is
+only a lower bound on the element — and the tab raises a warning naming
+the component. `I` resolves to the same ¹²⁹I rows as `129I`; the Notes
+tab states that the mass is a lower bound on elemental iodine.
+
+**Count each distinct composition once.** Many layers of the inventory
+are not independent observations: one waste-type template composition was
+multiplied by each layer's volume, so several tanks carry the same ratios
+to three significant figures. Counting every copy inflates the number of
+observations, and with it the apparent significance. With this option on
+(the default), layers whose components *all* agree within 1.5% — blank
+matching blank, zero matching zero — count as one observation. With the
+default list on the bundled dataset, 557 layers reduce to 393 distinct
+compositions. The figure states both numbers ("n = 393 distinct
+compositions of 557 layers") and the Notes tab says how many layers were
+set aside. Two consequences: the grouping depends on the component list
+(two layers can agree on four components and differ on a fifth), and it
+is unavailable on the `kg` basis, where one composition written into two
+volumes gives two different inventories.
+
+**Method.** `spearman` *(default)* is a rank correlation: insensitive to
+the orders-of-magnitude spread of concentrations, and it keeps reported
+zeros as the ties they are. `pearson (log10)` is the linear correlation
+of log10 values; a pair then uses only the layers where both values are
+positive. `kendall` is a rank correlation that is more conservative when
+ties are frequent. Each pair uses the layers that report *both*
+components. A pair with fewer shared observations than **min shared
+observations** (default 8), or with a constant component, is left blank:
+hatched in the figure, empty in the tables. The p-values are per pair and
+are not corrected for the number of pairs examined.
+
+**Tables.**
+
+- **Pairs** — one row per pair, strongest first: `r`, `p_value`, `N`
+  (observations used) and `N_both_positive`.
+- **Correlation matrix** and **N per pair** — the same numbers as
+  squares. The figure is drawn from the Correlation matrix table.
+- **What each component rests on** — to be read *before* the matrix.
+  `Reported_as` lists the analytes and units a component resolves to;
+  `N_tanks`, `N_tanks_positive` and `N_tanks_in_scope` say how many tanks
+  report it, report it above zero, and exist in the current scope;
+  `Unassigned_uncertainty_pct` is the share of its rows with
+  `Inventory_RSD = 0` (no uncertainty assigned — not an exact value) and
+  `Default_100pct_uncertainty_pct` the share sitting at an RSD of 1.00 (a
+  default of 100%, not a computed statistic). A component reported in a
+  handful of tanks, or resting mostly on default or unassigned
+  uncertainties, cannot carry a site-wide statement whatever its
+  coefficient. Bromine is the example on the bundled dataset: 11 of 177
+  tanks, about three quarters of its rows at the default.
+- **Co-occurrence** — per layer (or tank), which components sit above
+  their own quantile (default 0.75) across the matrix, and how many at
+  once (`N_high`). The rows at the top are where the components actually
+  coincide, which a coefficient only describes on average. This table
+  covers every layer in scope, repeated compositions included.
+- **Values** — the layer × component matrix itself, with the farm,
+  SST/DST, phase family, volume and mass of each layer. A blank cell is a
+  component the layer does not report; a zero is a reported zero.
+- **Notes** — the scope the run was computed under, the engine's warnings
+  and per-component disclosures, and the counts of repeated compositions
+  and blank pairs.
+
+The line above the results states in full only what bears on reading
+this matrix (a component with no value, a component that is a total in
+some layers and a lower bound in others, layers left blank for want of
+sodium). Notes that are true of the dataset whatever the question are
+given there as a count; their text is in the Notes tab, in the tooltip
+of that line, and in every export.
+
+**Plots.** *Correlation matrix* shows the lower triangle with the
+coefficient written in each cell, on a fixed −1 to +1 scale: blue for
+negative, red for positive, neutral gray at zero. *Pair scatter* is a
+log–log scatter of the pair selected in the Pairs table (the strongest
+pair when none is selected), drawn over the observations the coefficient
+used and colored by phase family at the layer level. A value of zero has
+no position on a logarithmic axis; the subtitle states how many
+observations were left off for that reason and how many do not report
+both components.
+
+**Scope and export.** The global scope bar (§19) applies to this sub-tab:
+a scope change re-runs the standing question, and the scope a result was
+computed under is stated in the figure subtitle, in Notes and in the
+export's `context.csv`. **Export** writes every table, the parameters of
+the run and the current figure.
+
+A coefficient here describes how two components vary together across the
+layers of the inventory as published. It is not evidence of a mechanism,
+and it inherits every limitation listed in the warnings above the
+results.
+
 ---
 
 ## 11. Debug / Export
 
-Reached from **Help → Debug / Export…**, not the nav rail — a
+Reached from **Help → Debug / Export…**, not the sidebar — a
 troubleshooting utility rather than a workspace.
 
 - **Export global debug bundle** — writes a folder of small audit CSVs
@@ -481,13 +731,16 @@ troubleshooting utility rather than a workspace.
 
 ## 12. Vitrification
 
-Four sub-tabs covering everything from a quick chemical/radiological
-screening score to real oxide-basis glass chemistry. Read this whole
-section before trusting a number from here — **every score in this
-workspace is a transparent screening heuristic, built from ordinary
-chemistry and simple weighted sums, not an official glass formulation
-model, thermodynamic calculation, or waste classification** (§14 has the
-full, explicit list of what these tools do *not* calculate).
+Five sub-tabs covering everything from a quick chemical/radiological
+screening score to real oxide-basis glass chemistry and published glass
+loading rules. Read this whole section before trusting a number from
+here — **every score in the first four sub-tabs is a transparent
+screening heuristic, built from ordinary chemistry and simple weighted
+sums, not an official glass formulation model, thermodynamic
+calculation, or waste classification** (§14 has the full, explicit list
+of what these tools do *not* calculate). The fifth sub-tab, Loading
+rules (§12.5), applies published loading constraints to the waste as
+stored; it is a screening index, not a forecast of glass production.
 
 The reason this workspace exists in this form: raw elemental kg inventory
 (what the source CSV actually contains) is not what glass scientists
@@ -565,9 +818,10 @@ basicity, NBO/T, melting/viscosity models, GlassNet — actually expects as
 input.
 
 **Workflow:** pick a farm (optional filter) → select one or more tanks
-(selecting 2+ also builds a "Blend (selected tanks)" sample) → **Build
-oxide composition** → review/edit the element→oxide assignment table →
-**Apply assumptions and recompute** whenever you change an assignment, a
+(selecting 2+ also builds a "Blend (selected tanks)" sample; the first
+tank is preselected, so the first press already gives a result) → **Run**
+→ review/edit the element→oxide assignment table →
+**Apply assumptions** whenever you change an assignment, a
 role, or the envelope table. That button re-runs the conversion itself,
 so an edited element→oxide assignment really does change the numbers.
 
@@ -727,7 +981,7 @@ before using an NBO/T number from here in a publication.
 
 #### 12.2.5 GlassNet property prediction
 
-When the optional `glasspy` package is installed, **GlassNet predict**
+When the optional `glasspy` package is installed, **Predict properties (GlassNet)**
 runs a pretrained machine-learning model (Cassar, *Ceramics International*
 49 (2023) 36013) against the current sample's oxide mol% composition and
 returns its predicted glass properties — including glass transition
@@ -822,6 +1076,158 @@ complement_score = 100 · (0.35·max(glass_former_gain, 0)
 - The glass-former fraction term uses the same elemental/oxide **basis**
   toggle as the other three sub-tabs.
 
+### 12.5 Loading rules
+
+For every tank (or waste layer), this sub-tab states which published
+loading rule would set the sodium loading of a low-activity-waste (LAW)
+glass made from its salt waste, how far below the alkali limit that
+loading is, and what it costs in glass. Unlike the four sub-tabs above,
+it is computed through the query engine (§19) and honors the scope bar:
+the scope a result was computed under is stated on the figure, in the
+Notes tab and in the export.
+
+**Source.** Every rule and constant is taken from J.D. Vienna, D.C.
+Skorski, D.S. Kim and J. Matyas, *Glass Property Models and Constraints
+for Estimating the Glass to be Produced at Hanford by Implementing
+Current Advanced Glass Formulation Efforts*, PNNL-22631 Rev. 1
+(ORP-58289), Pacific Northwest National Laboratory, 2013.
+
+**Rule sets.** Three sets can be selected. All concentrations are in wt%
+of glass.
+
+```
+Advanced LAW (2013)              Table S.12, Eq. 3.15 to 3.17, Figure 3.4b
+  alkali            Na2O + 0.66 K2O <= 24
+  alkali + sulfur   Na2O + 0.66 K2O <= 33.94 - 11.69 SO3
+  sulfur            SO3 <= 1.5
+  halide            SO3 <= 1.65 - 0.725 (Cl + 0.3 F + 0.4 Cr2O3)
+
+Advanced LAW, conservative halide          Eq. 3.15 to 3.17, Figure 3.4a
+  alkali, alkali + sulfur and sulfur as above
+  halide            Cl + 0.607 F + 0.542 Cr2O3 + K2O <= 3.746 - 4.694 SO3
+                    or                               <= 1.243 - 0.4506 SO3
+                    (the upper of the two lines is the boundary)
+
+WTP baseline                                              Eq. 3.1 to 3.6
+  sodium            Na2O <= 21
+  alkali            Na2O + 0.66 K2O <= 21.5
+  alkali + sulfur   Na2O + 42.5 SO3 <= 35.9
+  sulfur            SO3 <= 0.77
+  halide            Cl + 0.3 F <= 1.4656 - 2.1111 SO3   for SO3 <= 0.59
+                    Cl + 0.3 F <= 0.22                  for SO3 >  0.59
+```
+
+The report calls the Table S.12 halide rule "optimistic" (the largest
+loadings demonstrated) and the Figure 3.4a envelope "conservative" (no
+salt formed in any melter test), and places the real limit between the
+two. Eq. 3.7 to 3.10 of the report (limits on Cr₂O₃ and K₂O that depend
+on the P₂O₅ content of the glass) are not implemented.
+
+**From a rule to a loading.** Every waste component enters the glass in
+proportion to the sodium. With the waste mass ratios `r_X = X / Na2O`, a
+glass loaded to `w` wt% Na₂O holds `w · r_X` wt% of X, so each rule is an
+inequality in `w` alone and is solved for the largest `w` it allows:
+
+```
+alkali            w = 24 / (1 + 0.66 r_K2O)
+alkali + sulfur   w = 33.94 / (1 + 0.66 r_K2O + 11.69 r_SO3)
+sulfur            w = 1.5 / r_SO3
+halide            w = 1.65 / (r_SO3 + 0.725 (r_Cl + 0.3 r_F + 0.4 r_Cr2O3))
+```
+
+The conservative envelope allows the larger of `3.746 / (h + 4.694
+r_SO3)` and `1.243 / (h + 0.4506 r_SO3)`, with `h` its own halide term
+per Na₂O. The baseline halogen rule is piecewise: the sloped branch
+applies up to the loading at which SO₃ reaches 0.59 wt%, the flat
+0.22 wt% cap beyond it, and the result is the largest loading that
+either branch allows.
+
+The **loading** of a unit is the smallest of its rule limits and the
+**binding rule** is the one that gives it. `Glass mass = Na2O mass /
+(w / 100)`. **Extra glass** is the glass at the rule-limited loading
+minus the glass the same sodium would need at the alkali limit alone.
+
+**Oxide conversions.** The inventory reports Na, K, Cr, Cl and F as
+elements and sulfur as the sulfate anion. The gravimetric factors are
+computed from the atomic masses used everywhere else in Ember:
+
+| Glass component | From | kg per kg |
+|---|---|---|
+| Na₂O | Na | 1.3480 |
+| K₂O | K | 1.2046 |
+| SO₃ | SO₄ | 0.8334 |
+| Cr₂O₃ | Cr | 1.4615 |
+| Cl, F | Cl, F | 1 (used as elements, as the rules state them) |
+
+A species a unit does not report counts as zero in the rules; the Notes
+tab states how many units that concerns.
+
+**What "salt waste" means here.** The Waste selector decides which
+layers count as the feed. *Supernatant + saltcake* (the default) takes
+every layer whose waste phase begins with "Supernatant" or "Saltcake",
+the waste that becomes LAW feed. *Saltcake* and *Supernatant* take one
+family; *All phases* adds the sludge layers. With Unit set to *Tanks* the
+selected layers of each tank are summed before the rules are applied;
+with *Waste layers* each (tank, waste phase, waste type) entry is
+screened on its own. A unit that holds no sodium in the selected waste
+has no loading: it is left blank, not set to zero.
+
+**What the tab shows.**
+
+- Tiles: the sodium screened (kt Na₂O); the share of that sodium whose
+  loading is not set by the alkali limit; the glass needed unit by unit,
+  with its increase over the alkali-only figure; the glass needed if all
+  units were one blended feed, with that feed's loading and binding rule;
+  and the number of units loaded below 15 wt% Na₂O.
+- Units: one row per tank or layer (loading, binding rule, glass, extra
+  glass, the mass ratios, each rule's limit, and the SO₃, Cl, F and Cr₂O₃
+  content of the glass at that loading), sorted by extra glass.
+- Summary and Groups: the same totals, and the sodium split by binding
+  rule for all units, single- and double-shell tanks, and the saltcake
+  and supernatant layers.
+- Notes: the scope, the method, the rules with their source, and every
+  note the query engine raised about the data.
+
+**Reading the rule diagram.** The horizontal axis is SO₃ / Na₂O in the
+waste and the vertical axis is the rule set's halide term per Na₂O
+(Cl + 0.3 F + 0.4 Cr₂O₃ for the advanced set), both logarithmic. The
+background is tinted by the kind of rule that binds there and each
+region is named in place. Contour lines give the Na₂O loading the rules
+allow (5, 10, 15, 20 and 23 wt%). One marker stands for one tank or
+layer, with an area proportional to its sodium, coloured by tank system
+(tanks) or phase family (layers); the diamond is all units as one
+blended feed. Moving right (more sulfate) or up (more halide and
+chromium) lowers the loading. The alkali boundaries also depend on
+potassium: the regions are drawn for the K₂O / Na₂O ratio of the blended
+feed, so a unit with much more potassium can sit in a region other than
+its own binding rule, which the tooltip and the table always state.
+Pointing at a marker gives its values; a click selects its row in the
+Units table and a click on a row rings its marker; a double click opens
+the tank. The other two plots are the sodium split by binding rule for
+each group, and the units that cost the most extra glass.
+
+**Blending.** In the advanced set every rule is linear in the component
+masses, so a blended feed never needs more glass than its parts taken
+one by one; its loading is never below the sodium-weighted harmonic mean
+of the unit loadings, but can be well below their arithmetic mean. The
+conservative halide envelope and the baseline halogen rule are
+piecewise, and with them a blend can need more glass than its parts.
+
+**Scope of validity.** The rules were developed for LAW melter feeds.
+Applying them to the supernatant and saltcake of a tank as stored
+ignores retrieval, blending, pretreatment, the sodium added in
+processing and the wash liquors of sludge. The result is a screening
+index of which rule would bind, not a forecast of glass production, and
+§14 applies to it in full: it is not a glass formulation, a flowsheet
+waste loading or a property prediction.
+
+**Check values.** On the bundled 2026 export, with the advanced set,
+tanks, supernatant + saltcake and no scope: 133 tanks hold sodium
+(54.56 kt Na₂O); the alkali rule binds 53.2 % of it, alkali + sulfur
+36.6 %, sulfur 3.3 % and halide 6.9 %; the glass is 230.3 kt at the
+alkali limit, 276.9 kt tank by tank and 248.4 kt for one blended feed
+at 21.97 wt% Na₂O.
+
 ---
 
 ## 13. Figure Composer
@@ -837,7 +1243,7 @@ from Vitrification into one figure.
 **Workflow:**
 
 1. Build any plot you want as a panel, anywhere in Ember.
-2. Click **"→ Figure Composer"** on that plot's toolbar. This captures a
+2. Click **Send to Figure Composer** on that plot's toolbar. This captures a
    *recipe* — which internal plotting function drew it and the exact data/
    parameters used, not a picture of it — and adds it to the Figure
    Composer's gallery, along with a suggested caption drawn from the
@@ -932,7 +1338,7 @@ and nothing that should be read as a classification.
   if it survives.
 - **A heatmap or pair-matrix plot is unreadable** — reduce the
   element/tank count, or switch to log scaling.
-- **GlassNet predict is disabled** — `glasspy` (and the PyTorch it depends
+- **Predict properties (GlassNet) is disabled** — `glasspy` (and the PyTorch it depends
   on) isn't installed in this environment, or you're running the packaged
   `.exe` (which deliberately excludes it). Run from Python with `pip
   install glasspy` to enable it.
@@ -950,7 +1356,7 @@ and nothing that should be read as a classification.
   construction, not a bug.
 - **A Figure Composer panel looks stale after I changed something in the
   source workspace** — the composer holds the *data* from when you
-  clicked "→ Figure Composer," not a live link, so a genuinely different
+  clicked Send to Figure Composer, not a live link, so a genuinely different
   query/selection/reload won't show up on its own. Title, axis labels,
   and any of the panel's own listed Parameters (§13) can be changed
   directly in Figure Composer without recapturing; for anything else,
@@ -1044,8 +1450,19 @@ Three honesty rules the engine enforces everywhere:
    bound."* Warnings above the results flag mixed decay baselines
    (2015-07-01 vs 2022-01-01 cohorts) and rows with no assigned
    uncertainty (Inventory_RSD = 0).
+4. **A total and a lower bound are not one quantity.** On the mass bases
+   an element is taken from its reported mass where a layer gives one,
+   and from its bridged radionuclide where the layer gives only activity.
+   That is right for a site-wide total, but the two kinds of layer are
+   not comparable with each other: elemental selenium is reported in 60
+   tanks at hundreds to thousands of times the 79Se-implied mass of the
+   remaining 117. When a subject mixes the two, a warning names it and
+   counts the layers of each kind (*"Not one quantity across layers:
+   Se (153 layer(s) with a reported mass, 383 nuclide-only)"*). Twelve
+   elements of the shipped dataset are affected. To rank or correlate
+   like with like, query the nuclide itself (e.g. the analyte `79Se`).
 
-Element Explorer's **"Ask in Query →"** button jumps here with the same
+Element Explorer's **Ask in Query** button jumps here with the same
 subject — useful when you want the engine's apportioned/bridged numbers
 for something you were just exploring. (Element Explorer itself sums
 reported rows as-is; the two workspaces answer deliberately different

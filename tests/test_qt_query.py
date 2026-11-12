@@ -212,7 +212,7 @@ class TestGrammarPlots:
         qtbot.wait(20)
         legend = page.plot.ax.get_legend()
         assert legend is not None
-        assert legend.get_title().get_text() == "WastePhase"
+        assert legend.get_title().get_text() == "Waste phase"      # the dimension's readable label, not the column name
         labels = [t.get_text() for t in page.plot.ax.get_yticklabels()]
         assert all("·" not in label for label in labels)
 
@@ -257,7 +257,58 @@ class TestWarningsLabel:
         page.run()
         qtbot.wait(20)
         assert not page.warnings_label.isHidden()
-        assert page.warnings_label.text().startswith("⚠")
+        # One calm line above the result, every engine warning one click
+        # away and in full in text(): no alarm glyph, nothing dropped.
+        warnings = list(page._result.warnings)
+        assert warnings
+        assert list(page.warnings_label.notes()) == warnings
+        summary = page.warnings_label.summary_label.text()
+        if len(warnings) == 1:
+            assert summary == warnings[0]
+        else:
+            assert summary.startswith(f"{len(warnings)} notes qualify this result")
+            assert not page.warnings_label.toggle.isHidden()
+        assert "⚠" not in summary
+        for warning in warnings:
+            assert warning in page.warnings_label.detail_label.text()
+
+    def test_run_button_says_update_when_the_controls_left_the_result(self, qtbot):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(_chem_dataset())
+        assert page.run_btn.text() == "Run"
+        _run_element(page, "Fe")
+        qtbot.wait(20)
+        assert page.run_btn.text() == "Run"
+        page.basis_combo.setCurrentText("g")
+        assert page.run_btn.text() == "Update"
+        page.run()
+        qtbot.wait(20)
+        assert page.run_btn.text() == "Run"
+
+    def test_subject_field_offers_what_the_dataset_holds(self, qtbot):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(_chem_dataset())
+        page.kind_combo.setCurrentText("Analyte")
+        model = page.subject_edit.completer().model()
+        offered = {model.data(model.index(i, 0)) for i in range(model.rowCount())}
+        assert {"SO4", "129I", "Cr"} <= offered
+        page.kind_combo.setCurrentText("Element")
+        model = page.subject_edit.completer().model()
+        offered = {model.data(model.index(i, 0)) for i in range(model.rowCount())}
+        assert "S" in offered and "SO4" not in offered
+
+    def test_clicking_a_bar_selects_its_row(self, qtbot, sample_dataset):
+        page = _make_page(qtbot)
+        page.on_dataset_changed(sample_dataset)
+        _run_element(page, "Fe")
+        qtbot.wait(20)
+        frame = page.result_view.dataframe()
+        tank = str(frame["WasteSiteId"].iloc[-1])
+        page._on_mark_clicked({"label": tank, "value": 1.0})
+        selected = page.result_view.selectedIndexes()
+        assert selected
+        assert str(frame["WasteSiteId"].iloc[selected[0].row()]) == tank
+        page._on_mark_clicked({"label": "not a row"})     # no match: selection untouched, no error
 
     def test_hidden_again_after_a_clean_run(self, qtbot):
         page = _make_page(qtbot)

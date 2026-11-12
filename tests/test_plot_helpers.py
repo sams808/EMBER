@@ -197,8 +197,13 @@ class TestPlotCorrelationScan:
         ph.plot_correlation_scan(panel, df, "Cs")
         assert panel.ax.cleared
         assert panel.canvas.draw_idle_called
-        _, _, colors = panel.ax.barh_calls[0]
-        assert "tab:blue" in colors and "tab:red" in colors
+        _, values, colors = panel.ax.barh_calls[0]
+        # Positive blue, negative red: the two poles of the diverging map.
+        by_value = dict(zip(values, colors))
+        assert by_value[0.9] == ph.POSITIVE_COLOR == "#2a78d6"
+        assert by_value[-0.8] == ph.NEGATIVE_COLOR == "#e34948"
+        # The partner names (with their n) are declared for the tooltip.
+        assert set(panel.ax._ember_marks["categories"]) == {"Sr (n=5)", "Mo (n=5)"}
 
 
 class TestCorrelationSquareFromDataframe:
@@ -504,9 +509,10 @@ class TestPlotCandidateScores:
         panel = FakePanel()
         df = pd.DataFrame({"WasteSiteId": ["T1", "T2"], "User_search_score_proxy": [-50.0, 30.0]})
         ph.plot_candidate_scores(panel, df)
-        labels, values, color = panel.ax.barh_calls[0]
-        assert set(labels) == {"T1", "T2"}
+        _positions, values, color = panel.ax.barh_calls[0]
+        assert set(panel.ax._ember_marks["categories"]) == {"T1", "T2"}
         assert -50.0 in values
+        assert color == ph.BASE_COLOR == "#2a78d6"       # a single series is blue, never the UI accent
 
     def test_top_n_limits_bars(self):
         panel = FakePanel()

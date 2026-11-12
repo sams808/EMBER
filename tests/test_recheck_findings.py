@@ -106,7 +106,7 @@ class TestLegacyMatrixDoesNotFabricateZeros:
         page = _page(qtbot, HeatmapPage)
         page.on_dataset_changed(_dataset())
         page.attribution_combo.setCurrentText(mq.AS_REPORTED)
-        page.mode_combo.setCurrentText("inventory")
+        page.set_mode("inventory")
         page.run()
         qtbot.wait(20)
         label = page.plot.figure.axes[1].get_ylabel()

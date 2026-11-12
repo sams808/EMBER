@@ -167,3 +167,81 @@ class TestHelpDialog:
         qtbot.addWidget(dialog)
         assert dialog.size().width() == 920
         assert dialog.size().height() == 760
+
+    def test_dialog_has_a_title_band_and_a_close_button(self, qtbot):
+        dialog = qh.HelpDialog(title="About Ember", subtitle="Hanford tank waste explorer")
+        qtbot.addWidget(dialog)
+        assert dialog.band.title_label.text() == "About Ember"
+        assert dialog.band.subtitle_label.text() == "Hanford tank waste explorer"
+        with qtbot.waitSignal(dialog.accepted, timeout=1000):
+            dialog.close_btn.click()
+
+    def test_band_hides_an_empty_second_line(self, qtbot):
+        dialog = qh.HelpDialog(markdown="# Heading", title="Query — Help")
+        qtbot.addWidget(dialog)
+        assert dialog.band.subtitle_label.isHidden()
+
+
+class TestAboutText:
+    def test_about_states_that_the_project_is_independent(self):
+        assert "independent project" in qh.ABOUT_HTML
+        assert "not produced by, affiliated with, or" in qh.ABOUT_HTML
+        assert "endorsed by PNNL or the U.S. Department of Energy" in qh.ABOUT_HTML
+
+    def test_about_credits_the_author(self):
+        assert "Sami Soudani" in qh.ABOUT_HTML
+
+    def test_about_carries_no_colour_of_its_own(self):
+        # Colours come from the active palette (document_css), so the text
+        # reads the same in the light and in the dark theme.
+        import re
+        assert re.search(r"#[0-9a-fA-F]{6}\b", qh.ABOUT_HTML) is None
+        assert "color:" not in qh.ABOUT_HTML
+
+    def test_document_css_takes_its_colours_from_the_palette(self):
+        import qt_theme
+        for palette in (qt_theme.PALETTE, qt_theme.DARK_PALETTE):
+            css = qh.document_css(palette)
+            assert palette["link"] in css
+            assert palette["ink"] in css
+            assert palette["muted"] in css
+
+    def test_product_names(self):
+        assert qh.APP_NAME == "Ember"                 # settings key: must not change
+        assert qh.APP_DISPLAY_NAME == "EMBER"
+        assert qh.APP_SUBTITLE == "Hanford tank waste explorer"
+
+
+class TestGettingStartedWording:
+    def test_no_first_person_and_no_double_dashes_in_the_copy(self, qtbot):
+        from PySide6.QtWidgets import QLabel, QPushButton
+        dialog = qh.GettingStartedDialog()
+        qtbot.addWidget(dialog)
+        texts = [w.text() for w in dialog.findChildren(QLabel)] + [w.text() for w in dialog.findChildren(QPushButton)]
+        for text in texts:
+            assert " -- " not in text, text
+            assert "I'll" not in text and " my " not in text, text
+            assert "!" not in text, text
+
+    def test_every_option_shows_its_explanation(self, qtbot):
+        from PySide6.QtWidgets import QLabel
+        dialog = qh.GettingStartedDialog()
+        qtbot.addWidget(dialog)
+        shown = {w.text() for w in dialog.findChildren(QLabel)}
+        for _label, explanation, _target in qh.GETTING_STARTED_OPTIONS:
+            assert explanation in shown
+
+    def test_clicking_anywhere_on_a_row_chooses_it(self, qtbot):
+        from PySide6.QtCore import QPoint, Qt
+        dialog = qh.GettingStartedDialog()
+        qtbot.addWidget(dialog)
+        dialog.setAttribute(Qt.WA_DontShowOnScreen, True)
+        dialog.show()
+        received = []
+        dialog.workspace_chosen.connect(received.append)
+        rows = dialog.findChildren(qh._OptionRow)
+        assert len(rows) == len(qh.GETTING_STARTED_OPTIONS)
+        row = rows[1]
+        with qtbot.waitSignal(dialog.accepted, timeout=1000):
+            qtbot.mouseClick(row, Qt.LeftButton, pos=QPoint(row.width() - 6, row.height() // 2))
+        assert received == [qh.GETTING_STARTED_OPTIONS[1][2]]

@@ -176,19 +176,29 @@ class TestCoherentColorHelpers:
         assert ph._use_coherent_colors("Basic") is False
         assert ph._use_coherent_colors("Coherent colors") is True
 
-    def test_cmaps_differ_by_mode(self):
-        assert ph._corr_cmap("Basic") != ph._corr_cmap("Coherent colors")
-        assert ph._sequential_cmap("Basic") != ph._sequential_cmap("Coherent colors")
-        assert ph._jaccard_cmap("Basic") != ph._jaccard_cmap("Coherent colors")
+    def test_both_modes_draw_from_the_house_palette(self):
+        # A correlation is signed: one diverging map in both modes. Abundance
+        # is one blue ramp in both. Only co-presence takes its own hue in
+        # the "one hue per kind of quantity" mode.
+        assert ph._corr_cmap("Basic") == ph._corr_cmap("Coherent colors") == ph.CMAP_DIVERGING
+        assert ph._sequential_cmap("Basic") == ph._sequential_cmap("Coherent colors") == ph.CMAP_SEQUENTIAL
+        assert ph._jaccard_cmap("Basic") == ph.CMAP_SEQUENTIAL
+        assert ph._jaccard_cmap("Coherent colors") == ph.CMAP_GREENS
+
+    def test_house_colormaps_are_registered_with_matplotlib(self):
+        import matplotlib
+        for name in (ph.CMAP_SEQUENTIAL, ph.CMAP_DIVERGING, ph.CMAP_GREENS, ph.CMAP_REDS, ph.CMAP_GREYS):
+            assert name in matplotlib.colormaps
+            assert f"{name}_r" in matplotlib.colormaps
 
     def test_pair_palette_basic_is_none(self):
         assert ph._pair_palette_name("preferred", "Basic") is None
 
     def test_pair_palette_coherent_varies_by_mode(self):
-        assert ph._pair_palette_name("negative", "Coherent colors") == "rocket_r"
-        assert ph._pair_palette_name("positive", "Coherent colors") == "crest"
-        assert ph._pair_palette_name("jaccard", "Coherent colors") == "crest"
-        assert ph._pair_palette_name("preferred", "Coherent colors") == "flare"
+        assert ph._pair_palette_name("negative", "Coherent colors") == ph.CMAP_REDS
+        assert ph._pair_palette_name("positive", "Coherent colors") == ph.CMAP_SEQUENTIAL
+        assert ph._pair_palette_name("jaccard", "Coherent colors") == ph.CMAP_GREENS
+        assert ph._pair_palette_name("preferred", "Coherent colors") == ph.CMAP_SEQUENTIAL
 
     def test_set_seaborn_theme_noop_when_unavailable(self, monkeypatch):
         monkeypatch.setattr(ph, "sns", None)
@@ -250,21 +260,30 @@ class TestPlotSeabornTopAssociations:
         pdf = pd.DataFrame([{"Element_A": "Cs", "Element_B": "Sr", "Correlation_r": 0.9, "Jaccard_presence": 0.5, "N_both_present": 3, "PreferredAssociationScore_proxy": 1.0}])
         ph.plot_seaborn_top_associations(panel, pdf, mode="negative")
 
-    def test_coherent_palette_success_path(self, panel, workbench_results, qtbot):
-        # color_mode="Coherent colors" with sns.color_palette succeeding
-        # (no monkeypatch) -- the try branch, distinct from the fallback
-        # exercised below.
+    def test_coherent_mode_shades_ranked_bars_darkest_at_the_top(self, panel, workbench_results, qtbot):
         ph.plot_seaborn_top_associations(panel, workbench_results["pair_stats"], mode="preferred", color_mode="Coherent colors")
         qtbot.wait(20)
+        bars = panel.ax.patches
+        assert len(bars) >= 2
+        top, bottom = bars[-1].get_facecolor(), bars[0].get_facecolor()     # drawn bottom to top
+        assert sum(top[:3]) < sum(bottom[:3])                                # darker = stronger
 
-    def test_coherent_palette_failure_falls_back(self, panel, workbench_results, qtbot, monkeypatch):
-        # Force sns.color_palette to raise, exercising the except-fallback path.
+    def test_basic_mode_draws_one_flat_blue(self, panel, workbench_results, qtbot):
+        from matplotlib.colors import to_rgba
+        ph.plot_seaborn_top_associations(panel, workbench_results["pair_stats"], mode="preferred", color_mode="Basic")
+        qtbot.wait(20)
+        assert {tuple(p.get_facecolor()) for p in panel.ax.patches} == {to_rgba(ph.BASE_COLOR)}
+
+    def test_does_not_depend_on_a_seaborn_palette(self, panel, workbench_results, qtbot, monkeypatch):
+        # The bars are drawn from the house ramp: a seaborn palette lookup
+        # that fails must not be able to take the plot down.
         import seaborn as real_sns
         def boom(*a, **k):
             raise RuntimeError("boom")
         monkeypatch.setattr(real_sns, "color_palette", boom)
         ph.plot_seaborn_top_associations(panel, workbench_results["pair_stats"], mode="preferred", color_mode="Coherent colors")
         qtbot.wait(20)
+        assert len(panel.ax.patches) >= 1
 
 
 class TestPlotSeabornPairMatrix:

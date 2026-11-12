@@ -1,3 +1,4 @@
+import pytest
 from PySide6.QtWidgets import QComboBox, QMainWindow, QTableWidgetItem
 
 import qt_vitrification_oxide as qvo
@@ -28,10 +29,14 @@ class TestOxideChemistryTab:
         tab.export_tables()
         tab.run_glassnet()
 
-    def test_build_composition_no_tanks_selected_shows_warning(self, qtbot, oxide_dataset):
+    def test_build_composition_no_tanks_selected_says_so_and_builds_nothing(self, qtbot, oxide_dataset):
+        # A tank is selected on load (see TestFirstPress); with the
+        # selection cleared by hand there is nothing to convert.
         tab = _make_tab(qtbot)
         tab.on_dataset_changed(oxide_dataset)
-        tab.build_composition()  # QMessageBox.warning neutralized by conftest
+        tab.tank_list.clearSelection()
+        tab.build_composition()
+        assert tab.oxide_tables == {}
 
     def test_build_composition_populates_tables(self, qtbot, oxide_dataset):
         tab = _make_tab(qtbot)
@@ -270,7 +275,9 @@ class TestCoverageGaps:
     def test_rebuild_with_no_tanks_selected_shows_warning(self, qtbot, oxide_dataset):
         tab = _make_tab(qtbot)
         tab.on_dataset_changed(oxide_dataset)
-        tab._rebuild_and_show()  # no tanks selected -> tank_oxide_composition returns {}
+        tab.tank_list.clearSelection()
+        tab._rebuild_and_show()  # no tanks selected -> nothing is converted
+        assert tab.oxide_tables == {}
 
     def test_sample_changed_signal_fires_on_real_switch(self, qtbot, oxide_dataset):
         tab = _make_tab(qtbot)
@@ -314,3 +321,242 @@ class TestOnDatasetChanged:
         tab = _make_tab(qtbot)
         tab.on_dataset_changed(dm.HanfordDataset())
         assert tab.tank_list.count() == 0
+
+
+# ----------------------------------------------------------------------
+# The page pass: first press, states, notes, links
+# ----------------------------------------------------------------------
+@pytest.fixture
+def no_popups(monkeypatch):
+    """Record any modal box used where the status bar should speak."""
+    from PySide6.QtWidgets import QMessageBox
+    shown = []
+    for kind in ("information", "warning", "critical"):
+        monkeypatch.setattr(QMessageBox, kind, staticmethod(lambda *a, _k=kind, **k: shown.append((_k, a[1:3]))))
+    return shown
+
+
+def _two_farm_dataset():
+    import data_model as dm
+    import polars as pl
+    tanks = ["241-A-101", "241-A-102", "241-AN-104"]
+    dataset = dm.HanfordDataset()
+    dataset.df = dataset._clean_dataframe(pl.DataFrame({
+        "WasteSiteId": [t for t in tanks for _ in range(2)],
+        "Analyte": ["Na", "Si"] * len(tanks),
+        "WastePhase": ["Liquid"] * (2 * len(tanks)), "WasteType": ["T1"] * (2 * len(tanks)),
+        "Inventory": [100.0, 50.0, 40.0, 20.0, 60.0, 30.0], "Units": ["kg"] * (2 * len(tanks)),
+    }))
+    dataset.report = None
+    return dataset
+
+
+class TestFirstPress:
+    def test_a_tank_is_selected_as_soon_as_a_dataset_is_loaded(self, qtbot, oxide_dataset):
+        tab = _make_tab(qtbot)
+        assert tab.selected_tanks() == []
+        tab.on_dataset_changed(oxide_dataset)
+        assert tab.selected_tanks() == ["241-A-101"]        # the first of the list
+
+    def test_the_first_press_of_run_gives_a_result_without_a_popup(self, qtbot, oxide_dataset, no_popups):
+        tab = _make_tab(qtbot)
+        tab.on_dataset_changed(oxide_dataset)
+        assert tab.run_btn.text() == "Run" and tab.run_btn.objectName() == "Primary"
+        tab.run_btn.click()
+        assert list(tab.oxide_tables) == ["241-A-101"]
+        assert set(tab._table_views["Oxide composition"].dataframe()["Component"]) == {"Na2O", "SiO2"}
+        assert tab.plot.ax.get_title().startswith("Oxide-basis composition of 241-A-101")
+        assert tab.app_window.statusBar().currentMessage() == "Oxide chemistry: 1 composition built for 1 tank."
+        assert no_popups == []
+
+    def test_selection_survives_a_reload_and_a_farm_change_keeps_something_selected(self, qtbot):
+        tab = _make_tab(qtbot)
+        dataset = _two_farm_dataset()
+        tab.on_dataset_changed(dataset)
+        _select_tanks(tab, ["241-A-102"])
+        tab.on_dataset_changed(dataset)
+        assert tab.selected_tanks() == ["241-A-102"]
+        tab.farm_combo.setCurrentText("AN")
+        assert tab.selected_tanks() == ["241-AN-104"]
+
+    def test_run_reads_update_when_the_selection_differs_from_the_result(self, qtbot, oxide_dataset):
+        tab = _make_tab(qtbot)
+        tab.on_dataset_changed(oxide_dataset)
+        tab.build_composition()
+        assert tab.run_btn.text() == "Run"
+        _select_tanks(tab, ["241-A-103"])
+        assert tab.run_btn.text() == "Update"
+        tab.build_composition()
+        assert tab.run_btn.text() == "Run"
+
+
+class TestStatesWithoutPopups:
+    def test_every_refusal_is_a_status_bar_sentence(self, qtbot, oxide_dataset, no_popups):
+        tab = _make_tab(qtbot)
+        status = tab.app_window.statusBar()
+        tab.build_composition()
+        assert status.currentMessage() == "Oxide chemistry: no dataset is loaded yet."
+        tab.export_tables()
+        assert "nothing to export yet" in status.currentMessage()
+        tab.run_glassnet()
+        assert status.currentMessage() == "GlassNet: run the oxide conversion first."
+        tab.save_envelope()
+        assert "add at least one envelope row" in status.currentMessage()
+        tab.on_dataset_changed(oxide_dataset)
+        tab.tank_list.clearSelection()
+        tab.build_composition()
+        assert status.currentMessage() == "Oxide chemistry: select one or more tanks first."
+        assert no_popups == []
+
+    def test_idle_chart_and_tables_say_what_to_do(self, qtbot):
+        tab = _make_tab(qtbot)
+        texts = {t.get_gid(): t.get_text() for t in tab.plot.ax.texts}
+        assert texts["ember-empty-title"] == "No result yet"
+        assert "Run" in texts["ember-empty-hint"]
+        assert tab._table_views["Oxide composition"].empty_state.title_label.text() == "No result yet"
+        assert tab._table_views["Envelope check"].empty_state.title_label.text() == "No envelope set"
+        assert not tab.sample_combo.isEnabled()
+
+    def test_a_new_dataset_clears_the_standing_result(self, qtbot, oxide_dataset):
+        tab = _make_tab(qtbot)
+        tab.on_dataset_changed(oxide_dataset)
+        tab.build_composition()
+        assert tab.oxide_tables
+        tab.on_dataset_changed(oxide_dataset)
+        assert tab.oxide_tables == {} and tab.sample_combo.count() == 0
+        assert tab._table_views["Oxide composition"].dataframe().empty
+        assert tab.summary_label.text() == "" and tab.notes_banner.notes() == ()
+
+    def test_a_late_conversion_is_discarded(self, qtbot, oxide_dataset):
+        tab = _make_tab(qtbot)
+        tab.on_dataset_changed(oxide_dataset)
+        tab._on_converted(qvo._Outcome(token=tab._run_token - 1, tanks=("241-A-103",),
+                                       tables={"241-A-103": object()}))
+        assert tab.oxide_tables == {}
+
+
+class TestTankField:
+    def test_tank_field_offers_the_tanks_of_the_dataset(self, qtbot, oxide_dataset):
+        tab = _make_tab(qtbot)
+        assert tab.tank_edit.completer() is None
+        tab.on_dataset_changed(oxide_dataset)
+        model = tab.tank_edit.completer().model()
+        offered = [model.data(model.index(row, 0)) for row in range(model.rowCount())]
+        assert offered == oxide_dataset.available_tanks()
+        assert tab.tank_edit.toolTip()
+
+    def test_a_typed_tank_is_selected_and_run_on_enter(self, qtbot, oxide_dataset):
+        tab = _make_tab(qtbot)
+        tab.on_dataset_changed(oxide_dataset)
+        tab.tank_edit.setText("241-a-103")                  # any case
+        tab.tank_edit.returnPressed.emit()
+        assert tab.selected_tanks() == ["241-A-103"]
+        assert list(tab.oxide_tables) == ["241-A-103"]
+
+    def test_a_tank_of_another_farm_shows_every_farm(self, qtbot):
+        tab = _make_tab(qtbot)
+        tab.on_dataset_changed(_two_farm_dataset())
+        tab.farm_combo.setCurrentText("A")
+        assert tab.tank_list.count() == 2
+        assert tab.select_tank("241-AN-104")
+        assert tab.farm_combo.currentText() == "All"
+        assert tab.selected_tanks() == ["241-AN-104"]
+
+    def test_an_unknown_tank_is_said_in_the_status_bar(self, qtbot, oxide_dataset, no_popups):
+        tab = _make_tab(qtbot)
+        tab.on_dataset_changed(oxide_dataset)
+        tab.tank_edit.setText("241-ZZ-999")
+        tab.tank_edit.returnPressed.emit()
+        assert tab.app_window.statusBar().currentMessage() == "Oxide chemistry: the dataset has no tank named 241-ZZ-999."
+        assert tab.oxide_tables == {} and no_popups == []
+
+
+class TestNotesAndSources:
+    def test_every_statement_and_citation_is_in_the_notes_of_a_result(self, qtbot, oxide_dataset):
+        import glass_science as gscience
+        import oxide_science as oxsci
+        tab = _make_tab(qtbot)
+        tab.on_dataset_changed(oxide_dataset)
+        assert tab.warnings_label is tab.notes_banner and tab.notes_banner.notes() == ()
+        _select_tanks(tab, ["241-A-102"])
+        tab.build_composition()
+        text = tab.warnings_label.text()
+        assert oxsci.oxide_basis_note() in text
+        assert gscience.OPTICAL_BASICITY_SOURCE in text
+        for cited in ("PNNL-20184", "Cassar, Ceram. Int. 49 (2023) 36013", "SciGlass", "simplified approximation"):
+            assert cited in text
+        assert "No optical basicity value is tabulated for" in text and "PuO2" in text
+        for cited in ("PNNL-20184", "Cassar", "SciGlass", "not an official glass model"):
+            assert cited in qvo.SOURCES_NOTE
+        assert "not an official glass model" in tab.header.subtitle_label.text()
+
+    def test_glassnet_unavailable_is_explained_calmly(self, qtbot, monkeypatch):
+        monkeypatch.setattr(qvo.gscience, "glassnet_available", lambda: False)
+        tab = _make_tab(qtbot)
+        tip = tab.gn_btn.toolTip()
+        assert not tab.gn_btn.isEnabled()
+        assert "optional glasspy package" in tip and "not part of" in tip
+        assert "pip install" not in tip and "!" not in tip
+        assert tab._table_views["GlassNet"].empty_state.title_label.text() == "Not available in this installation"
+
+    def test_glassnet_available_keeps_the_button_enabled(self, qtbot, monkeypatch):
+        monkeypatch.setattr(qvo.gscience, "glassnet_available", lambda: True)
+        tab = _make_tab(qtbot)
+        assert tab.gn_btn.isEnabled() and tab.gn_btn.text() == "Predict properties (GlassNet)"
+
+
+class TestChartAndTable:
+    def test_columns_are_read_in_order_and_the_table_is_the_science_table(self, qtbot, oxide_dataset):
+        tab = _make_tab(qtbot)
+        tab.on_dataset_changed(oxide_dataset)
+        tab.build_composition()
+        view = tab._table_views["Oxide composition"]
+        table = tab.oxide_tables["241-A-101"]
+        assert view.dataframe() is table
+        names = [str(c) for c in table.columns]
+        header = view.horizontalHeader()
+        shown = [names[header.logicalIndex(i)] for i in range(3)]
+        assert shown == ["Component", "Wt_pct", "Mol_pct"]
+
+    def test_a_click_on_a_bar_selects_the_component_row(self, qtbot, oxide_dataset):
+        tab = _make_tab(qtbot)
+        tab.on_dataset_changed(oxide_dataset)
+        tab.build_composition()
+        tab.tables.setCurrentIndex(1)
+        view = tab._table_views["Oxide composition"]
+        tab._on_mark_clicked({"label": "SiO2"})
+        assert tab.tables.currentWidget() is view
+        row = list(view.dataframe()["Component"]).index("SiO2")
+        assert {index.row() for index in view.selectedIndexes()} == {row}
+
+    def test_the_chart_follows_the_sample(self, qtbot, oxide_dataset):
+        tab = _make_tab(qtbot)
+        tab.on_dataset_changed(oxide_dataset)
+        _select_tanks(tab, ["241-A-101", "241-A-103"])
+        tab.build_composition()
+        tab.sample_combo.setCurrentText("Blend (selected tanks)")
+        assert tab.plot.ax.get_title().startswith("Oxide-basis composition of Blend (selected tanks)")
+        assert "wt%" in tab.plot.ax.get_xlabel()
+
+    def test_an_edited_envelope_or_role_is_applied_at_once(self, qtbot, oxide_dataset):
+        tab = _make_tab(qtbot)
+        tab.on_dataset_changed(oxide_dataset)
+        tab.build_composition()
+        tab._add_envelope_row()
+        assert tab._table_views["Envelope check"].dataframe().empty
+        tab.envelope_table.setItem(0, 0, QTableWidgetItem("SiO2"))      # an edit, as typed in the cell
+        assert "SiO2" in set(tab._table_views["Envelope check"].dataframe()["Oxide"])
+        before = tab.summary_label.text()
+        row = next(r for r in range(tab.role_table.rowCount()) if tab.role_table.item(r, 0).text() == "Na2O")
+        tab.role_table.cellWidget(row, 1).setCurrentText("other")
+        assert tab.summary_label.text() != before
+
+    def test_export_writes_the_chart_beside_the_tables(self, qtbot, oxide_dataset, tmp_path):
+        tab = _make_tab(qtbot)
+        oxide_dataset.output_root = tmp_path
+        tab.on_dataset_changed(oxide_dataset)
+        tab.build_composition()
+        tab.export_tables()
+        bundle = next(tmp_path.glob("oxide_chemistry_*"))
+        assert (bundle / "oxide_plot.png").stat().st_size > 1000
+        assert (bundle / "241-A-101.csv").exists()

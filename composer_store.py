@@ -160,6 +160,6 @@ class ComposerStore(QObject):
             self.changed.emit()
 
 
-# Module-level singleton: every PlotWidget's "-> Figure Composer" button and
+# Module-level singleton: every PlotWidget's "Send to Figure Composer" button and
 # the Figure Composer page itself share this one instance.
 store = ComposerStore()

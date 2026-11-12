@@ -191,7 +191,8 @@ class TestRenderBar:
         qtbot.wait(20)
         assert len(panel.ax.patches) == 4  # 2 tanks x 2 phases
         assert panel.ax.get_legend() is not None
-        assert panel.ax.get_legend().get_title().get_text() == "WastePhase"
+        # The legend names the dimension as a reader would, not as a column.
+        assert panel.ax.get_legend().get_title().get_text() == "Waste phase"
 
     def test_stacked_bar_widths_sum_to_category_totals(self, qtbot):
         panel = _panel(qtbot)

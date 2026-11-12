@@ -33,13 +33,28 @@ from matrix_science import log10_safe
 from plot_helpers import (
     ACCENT_COLOR,
     BASE_COLOR,
+    CHART_FAINT,
+    CHART_SECONDARY,
+    CMAP_CELLS,
+    DATA_CATEGORICAL,
+    figure_size_inches,
     bar_figure_height,
+    declare_minimum_size,
+    bare_frame,
+    category_barh,
     composable,
-    heatmap_ytick_step,
+    declare_categories,
     make_unique_plot_labels,
+    mark_cells,
+    mark_points,
     numeric_plot_series,
     positive_value_frame,
+    ramp_colors,
+    series_colors,
+    SUBTITLE_SEP,
+    wrap_subtitle,
 )
+from qt_table_format import humanize, plural_label, tank_id_of, unit_from_label
 from query_engine import VALUE_AXIS_LABELS
 
 # Marks implemented by the Stage-2 renderer, each with the label a UI combo
@@ -70,11 +85,13 @@ MAX_FACETS = 12
 # dense matrices is handled by tick thinning, not by dropping rows.
 MAX_HEATMAP_CELLS = 30000
 
-# House plot colors. ACCENT_COLOR/BASE_COLOR come from plot_helpers so the
-# grammar and the legacy renderers can never drift into two different
-# "house accents" on one screen.
-BAR_COLOR = ACCENT_COLOR
-SCATTER_COLOR = "#4C78A8"
+# House plot colors. They come from plot_helpers so the grammar and the
+# legacy renderers can never drift into two different looks on one
+# screen: a single series is BASE_COLOR (blue) whichever layer draws it.
+# ACCENT_COLOR stays imported for callers that highlight one category.
+BAR_COLOR = BASE_COLOR
+SCATTER_COLOR = BASE_COLOR
+HIGHLIGHT_COLOR = ACCENT_COLOR
 
 # A null in a grouping dimension is a FACT about the dataset (the
 # attributes file leaves TankStatus empty for two thirds of the rows),
@@ -172,9 +189,14 @@ def validate_spec(spec: PlotSpec, columns: List[str]) -> None:
 
 
 def default_axis_label(column: str) -> str:
-    """Unit-honest label for engine value columns; the column name itself
-    for anything else (better than inventing wording)."""
-    return VALUE_AXIS_LABELS.get(column, column)
+    """Unit-honest label for engine value columns; the column's readable
+    label (qt_table_format) for anything else -- never the raw identifier."""
+    return VALUE_AXIS_LABELS.get(column) or humanize(column)
+
+
+def dimension_label(column: Optional[str]) -> str:
+    """What a grouping column is called on a figure ("WasteSiteId" -> "Tank")."""
+    return humanize(column) if column else ""
 
 
 # ======================================================================
@@ -186,21 +208,20 @@ def default_axis_label(column: str) -> str:
 # show_message), so the same call replays into ComposerCellPanel.
 # ======================================================================
 
-# Okabe-Ito colorblind-safe categorical palette (house default for hue).
-OKABE_ITO = (
-    "#0072B2", "#E69F00", "#009E73", "#D55E00",
-    "#CC79A7", "#56B4E9", "#F0E442", "#8a8a8a",
-)
+# The categorical palette for hue: the house colours, in their fixed
+# order. The name is kept for saved specs and callers that import it.
+OKABE_ITO = tuple(DATA_CATEGORICAL)
 
 
 def _hue_colors(n: int, palette: str) -> List[str]:
+    """Series colours for a palette NAME (names are part of saved specs):
+    "okabe-ito" the categorical order, "viridis" one hue shading from
+    dark to light (ordered series), "single" one colour."""
     if palette == "single":
         return [BASE_COLOR] * n
     if palette == "viridis":
-        import matplotlib
-        cmap = matplotlib.colormaps["viridis"]
-        return [cmap(0.1 + 0.8 * (i / max(1, n - 1))) for i in range(n)]
-    return [OKABE_ITO[i % len(OKABE_ITO)] for i in range(n)]
+        return ramp_colors(n)
+    return series_colors(n)
 
 
 def _apply_titles(panel, ax, spec: PlotSpec, notes: List[str]) -> None:
@@ -209,11 +230,14 @@ def _apply_titles(panel, ax, spec: PlotSpec, notes: List[str]) -> None:
     the caption stays the real title either way). Trim notes ride on the
     subtitle line -- loud, on the figure itself, per the no-silent-caps
     rule."""
-    sub_parts = [p for p in ([spec.subtitle] + notes) if p]
-    subtitle = " · ".join(sub_parts)
-    if subtitle:
+    sub_parts = [q.strip() for p in ([spec.subtitle] + notes) if p for q in str(p).split(SUBTITLE_SEP) if q.strip()]
+    if sub_parts:
+        # Wrapped to the width of the figure it is drawn on: a subtitle
+        # that runs off the edge loses the disclosures it exists to carry.
+        width = max(30, int(13.0 * figure_size_inches(panel.figure)[0]))
+        text = wrap_subtitle(sub_parts, width=width)
         panel.figure.suptitle(spec.title)
-        ax.set_title(subtitle, fontsize=9, color="0.35")
+        ax.set_title(text, fontsize=9, color=CHART_SECONDARY, fontweight="normal")
     else:
         ax.set_title(spec.title)
 
@@ -225,15 +249,15 @@ def _draw_annotations(ax, spec: PlotSpec) -> None:
         if value is None:
             continue
         if kind == "vline":
-            ax.axvline(float(value), color="0.3", linestyle="--", linewidth=1.0)
+            ax.axvline(float(value), color=CHART_SECONDARY, linestyle="--", linewidth=1.0)
             if ann.get("label"):
                 ax.text(float(value), 0.98, str(ann["label"]), transform=ax.get_xaxis_transform(),
-                        fontsize=8, color="0.3", ha="left", va="top", rotation=90)
+                        fontsize=8, color=CHART_SECONDARY, ha="left", va="top", rotation=90)
         elif kind == "hline":
-            ax.axhline(float(value), color="0.3", linestyle="--", linewidth=1.0)
+            ax.axhline(float(value), color=CHART_SECONDARY, linestyle="--", linewidth=1.0)
             if ann.get("label"):
                 ax.text(0.99, float(value), str(ann["label"]), transform=ax.get_yaxis_transform(),
-                        fontsize=8, color="0.3", ha="right", va="bottom")
+                        fontsize=8, color=CHART_SECONDARY, ha="right", va="bottom")
 
 
 def _category_dims(spec: PlotSpec) -> List[str]:
@@ -273,7 +297,7 @@ def _trimmed_categories(
     finding: the note used to count only the survivors)."""
     if len(pdf) > limit:
         pdf = pdf.nlargest(limit, "_cat_value")
-        notes.append(f"top {limit} of {total} {spec.y} shown")
+        notes.append(f"top {limit} of {total} {plural_label(spec.y)} shown")
     if spec.sort == "label":
         return pdf.sort_values("_cat", key=lambda s: s.astype(str))
     if spec.sort == "value":
@@ -296,7 +320,7 @@ def _note_unplottable(data: pd.DataFrame, pdf: pd.DataFrame, spec: PlotSpec,
     total = int(data[spec.y].nunique(dropna=False))
     kept = int(pdf[spec.y].nunique(dropna=False))
     if total > kept:
-        notes.append(f"{total - kept} of {total} {spec.y} not plottable (zero, negative, or blank)")
+        notes.append(f"{total - kept} of {total} {plural_label(spec.y)} not plottable (zero, negative, or blank)")
     return total
 
 
@@ -396,9 +420,12 @@ def _render_bars(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str]) ->
             xerr = numeric_plot_series(grouped[spec.errorbars]).to_numpy(dtype=float)
         elif spec.errorbars:
             notes.append("error bars need one row per category")
-        ax.barh(labels, grouped["_cat_value"].to_numpy(dtype=float),
-                color=BASE_COLOR if spec.palette == "single" else BAR_COLOR,
-                xerr=xerr, ecolor="0.3", capsize=2 if xerr is not None else 0)
+        category_barh(
+            ax, labels.tolist(), grouped["_cat_value"].to_numpy(dtype=float),
+            color=BASE_COLOR if spec.palette == "single" else BAR_COLOR,
+            xerr=xerr, ecolor=CHART_SECONDARY, capsize=2 if xerr is not None else 0,
+            name=dimension_label(spec.y), value_label=spec.xlabel or default_axis_label(spec.x),
+        )
     else:
         pivot = pdf.pivot_table(index=spec.y, columns=spec.hue, values="_val",
                                 aggfunc="sum", fill_value=0.0, dropna=False)
@@ -440,9 +467,12 @@ def _render_bars(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str]) ->
                 offset = (i - (len(hue_levels) - 1) / 2.0) * band
                 ax.barh(y_pos + offset, pivot[level].to_numpy(dtype=float),
                         height=band * 0.9, color=color, label=str(level))
-        ax.set_yticks(y_pos)
-        ax.set_yticklabels(labels, fontsize=8 if len(labels) <= 45 else 6)
-        ax.legend(title=spec.hue, fontsize=8, loc="lower right", framealpha=0.9)
+        ax.set_ylim(-0.6, len(labels) - 0.4)
+        declare_categories(
+            ax, labels, axis="y", name=dimension_label(spec.y), series_name=dimension_label(spec.hue),
+            value_label=spec.xlabel or default_axis_label(spec.x),
+        )
+        ax.legend(title=dimension_label(spec.hue), fontsize=8, loc="lower right")
 
     # A stacked bar asserts that segment lengths partition the total.
     # On a log axis a segment's drawn length is log(left+v) - log(left),
@@ -453,7 +483,7 @@ def _render_bars(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str]) ->
     ax.set_xlabel(_axis_label(spec, ax))
     if spec.ylabel:
         ax.set_ylabel(spec.ylabel)
-    ax.grid(True, axis="x", alpha=0.25)
+    ax.grid(True, axis="x")
     _draw_annotations(ax, spec)
     _apply_titles(panel, ax, spec, notes)
     panel.figure.tight_layout()
@@ -473,7 +503,7 @@ def _render_heatmap(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
     pivot = pivot.loc[pivot.sum(axis=1, skipna=True).sort_values(ascending=False).index]
     max_rows = max(1, MAX_HEATMAP_CELLS // max(1, pivot.shape[1]))
     if len(pivot) > max_rows:
-        notes.append(f"top {max_rows} of {len(pivot)} {spec.y} rows shown")
+        notes.append(f"top {max_rows} of {len(pivot)} {dimension_label(spec.y).lower()} rows shown")
         pivot = pivot.head(max_rows)
 
     values = pivot.to_numpy(dtype=float)
@@ -499,19 +529,29 @@ def _render_heatmap(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
     ax = panel.figure.add_subplot(111)
     panel.ax = ax
     import matplotlib
-    cmap = matplotlib.colormaps["viridis"].copy()
-    cmap.set_bad(color="0.92")
+    # Magnitude is one hue, light to dark. A cell with no measurement is
+    # a flat neutral, clearly outside the ramp: "not known" must not look
+    # like "low".
+    cmap = matplotlib.colormaps[CMAP_CELLS].copy()
+    cmap.set_bad(color="#ecebe7")
     im = ax.imshow(values, aspect="auto", interpolation="nearest", cmap=cmap)
-    ax.set_xticks(range(n_cols))
-    ax.set_xticklabels([str(c) for c in pivot.columns], rotation=90, fontsize=7)
-    step = heatmap_ytick_step(n_rows)
-    ax.set_yticks(range(0, n_rows, step))
-    ax.set_yticklabels([str(i) for i in pivot.index[::step]], fontsize=7)
+    bare_frame(ax)
+    declare_categories(ax, [str(c) for c in pivot.columns], axis="x", name=dimension_label(spec.hue),
+                       rotation=90, note=False, min_font=5.5, record=False)
+    # Every row is drawn; its label is shown where there is room for it
+    # (the top row always), and the tooltip names any row.
+    declare_categories(ax, [str(i) for i in pivot.index], axis="y", name=dimension_label(spec.y),
+                       anchor="first", mark_word="cell", record=False)
     base_label = spec.xlabel or default_axis_label(spec.x)
     if spec.normalize == "row":
         base_label = f"fraction of row total ({base_label})"
     cbar_label = f"log10 {base_label}" if spec.log_x else base_label
     panel.figure.colorbar(im, ax=ax, fraction=0.025, pad=0.02, label=cbar_label)
+    mark_cells(
+        ax, [str(i) for i in pivot.index], [str(c) for c in pivot.columns],
+        row_name=dimension_label(spec.y), col_name=dimension_label(spec.hue), value_label=cbar_label,
+        unit=unit_from_label(cbar_label), blank_text="not reported",
+    )
     _draw_annotations(ax, spec)
     _apply_titles(panel, ax, spec, notes)
     panel.figure.tight_layout()
@@ -537,8 +577,9 @@ def _render_scatter(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
 
     ax = panel.reset_axes()
     if spec.hue is None:
-        ax.scatter(pdf["_x"], pdf["_y"], s=28,
-                   color=BASE_COLOR if spec.palette == "single" else SCATTER_COLOR, alpha=0.8)
+        sc = ax.scatter(pdf["_x"], pdf["_y"], s=30, edgecolors="white", linewidths=0.5,
+                        color=BASE_COLOR if spec.palette == "single" else SCATTER_COLOR, alpha=0.85)
+        _mark_scatter_rows(ax, sc, pdf, spec)
     else:
         levels = list(pdf.groupby(spec.hue, dropna=False).size().sort_values(ascending=False).index)
         if len(levels) > MAX_HUE_LEVELS:
@@ -547,12 +588,14 @@ def _render_scatter(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
         colors = _hue_colors(len(levels), spec.palette)
         for level, color in zip(levels, colors):
             sub = pdf[pdf[spec.hue] == level]
-            ax.scatter(sub["_x"], sub["_y"], s=28, color=color, alpha=0.8, label=str(level))
-        ax.legend(title=spec.hue, fontsize=8, framealpha=0.9)
+            sc = ax.scatter(sub["_x"], sub["_y"], s=30, color=color, alpha=0.85, label=str(level),
+                            edgecolors="white", linewidths=0.5)
+            _mark_scatter_rows(ax, sc, sub, spec)
+        ax.legend(title=dimension_label(spec.hue), fontsize=8)
     yerr = None
     if spec.errorbars and spec.errorbars in pdf.columns and spec.hue is None:
         yerr = numeric_plot_series(pdf[spec.errorbars]).to_numpy(dtype=float)
-        ax.errorbar(pdf["_x"], pdf["_y"], yerr=yerr, fmt="none", ecolor="0.5",
+        ax.errorbar(pdf["_x"], pdf["_y"], yerr=yerr, fmt="none", ecolor=CHART_FAINT,
                     elinewidth=1.0, capsize=2, zorder=0)
     if spec.log_x:
         ax.set_xscale("log")
@@ -560,10 +603,25 @@ def _render_scatter(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
         ax.set_yscale("log")
     ax.set_xlabel(spec.xlabel or default_axis_label(spec.x))
     ax.set_ylabel(spec.ylabel or default_axis_label(spec.y))
-    ax.grid(True, alpha=0.25)
+    ax.grid(True)
     _draw_annotations(ax, spec)
     _apply_titles(panel, ax, spec, notes)
     panel.figure.tight_layout()
+
+
+def _mark_scatter_rows(ax, collection, frame: pd.DataFrame, spec: PlotSpec) -> None:
+    """Name each point after the row it was drawn from: the tank when the
+    data has one, otherwise the first column that is neither axis."""
+    columns = [c for c in frame.columns if c not in (spec.x, spec.y, "_x", "_y") and not str(c).startswith("_")]
+    label_col = "WasteSiteId" if "WasteSiteId" in columns else next(
+        (c for c in columns if frame[c].dtype == object and c != spec.hue), None)
+    if label_col is None:
+        return
+    labels = frame[label_col].astype(str).tolist()
+    mark_points(
+        ax, collection, labels, name=dimension_label(label_col),
+        tank_ids=[tank_id_of(v) for v in labels], series_name=dimension_label(spec.hue),
+    )
 
 
 def _render_box(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str]) -> None:
@@ -585,10 +643,11 @@ def _render_box(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str]) -> 
     panel.set_figure_size_inches(
         panel.figure.get_size_inches()[0], bar_figure_height(len(cats), per_bar=0.30))
     ax.boxplot(series, orientation="horizontal", tick_labels=[str(c) for c in cats],
-               flierprops={"markersize": 3, "alpha": 0.5})
+               flierprops={"markersize": 3, "alpha": 0.5}, patch_artist=True,
+               boxprops={"facecolor": "#cde2fb", "edgecolor": BASE_COLOR, "linewidth": 1.0})
     _apply_log_x(ax, spec, notes)
     ax.set_xlabel(_axis_label(spec, ax))
-    ax.grid(True, axis="x", alpha=0.25)
+    ax.grid(True, axis="x")
     _draw_annotations(ax, spec)
     _apply_titles(panel, ax, spec, notes)
     panel.figure.tight_layout()
@@ -606,7 +665,7 @@ def _render_faceted(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
     totals = value_for_rank.groupby(pdf[spec.facet]).sum().sort_values(ascending=False)
     levels = list(totals.index)
     if len(levels) > MAX_FACETS:
-        notes.append(f"top {MAX_FACETS} of {len(levels)} {spec.facet} facets shown")
+        notes.append(f"top {MAX_FACETS} of {len(levels)} {plural_label(spec.facet)} shown")
         levels = levels[:MAX_FACETS]
 
     panel.figure.clear()
@@ -632,17 +691,19 @@ def _render_faceted(panel, data: pd.DataFrame, spec: PlotSpec, notes: List[str])
         # Per-facet trimming was silent before: _draw_facet_cell never
         # received the notes list its own docstring promised to feed
         # (review finding).
-        notes.append(f"top {trimmed_in_facet} of {facet_total} {spec.y} per facet")
+        notes.append(f"top {trimmed_in_facet} of {facet_total} {plural_label(spec.y)} per facet")
     if unplottable:
-        notes.append(f"{unplottable} {spec.y} not plottable "
+        notes.append(f"{unplottable} {plural_label(spec.y)} not plottable "
                      f"(zero, negative, or blank) across the facets")
     for j in range(len(levels), n_rows * n_cols):
         axes[j // n_cols][j % n_cols].set_axis_off()
     panel.ax = axes[0][0]
+    # A grid of small charts: each needs room for its own tick labels.
+    declare_minimum_size(panel.ax, 1.45 * n_cols + 0.5, 1.15 * n_rows + 0.8)
     panel.figure.suptitle(spec.title)
     footer = " · ".join(p for p in ([spec.subtitle] + notes) if p)
     if footer:
-        panel.figure.text(0.5, 0.005, footer, ha="center", fontsize=8, color="0.35")
+        panel.figure.text(0.5, 0.005, footer, ha="center", fontsize=8, color=CHART_SECONDARY)
     panel.figure.tight_layout(rect=(0, 0.02 if footer else 0, 1, 0.96))
 
 
@@ -657,7 +718,7 @@ def _draw_facet_cell(ax, sub: pd.DataFrame, spec: PlotSpec) -> Tuple[int, int]:
         pdf = pdf[pdf["_val"] > 0]
         if pdf.empty:
             ax.text(0.5, 0.5, "no data", transform=ax.transAxes, ha="center",
-                    fontsize=8, color="0.5")
+                    fontsize=8, color=CHART_FAINT)
             ax.set_axis_off()
             return (0, 0, 0)
         # Intensive values (wt%, g/L) each carry their own denominator,
@@ -669,12 +730,13 @@ def _draw_facet_cell(ax, sub: pd.DataFrame, spec: PlotSpec) -> Tuple[int, int]:
         available = len(totals)
         dropped = sub[spec.y].nunique(dropna=False) - available
         grouped = totals.head(_bar_limit(spec)).iloc[::-1]
-        ax.barh([str(v) for v in grouped.index], grouped.to_numpy(dtype=float),
-                color=BASE_COLOR if spec.palette == "single" else BAR_COLOR)
+        category_barh(ax, [str(v) for v in grouped.index], grouped.to_numpy(dtype=float),
+                      color=BASE_COLOR if spec.palette == "single" else BAR_COLOR,
+                      name=dimension_label(spec.y), value_label=spec.xlabel or default_axis_label(spec.x))
         if spec.log_x:
             ax.set_xscale("log")
-        ax.tick_params(labelsize=7)
-        ax.grid(True, axis="x", alpha=0.25)
+        ax.tick_params(axis="x", labelsize=7)
+        ax.grid(True, axis="x")
         return (len(grouped), available, max(0, dropped))
     else:
         x = numeric_plot_series(sub[spec.x])
@@ -684,12 +746,13 @@ def _draw_facet_cell(ax, sub: pd.DataFrame, spec: PlotSpec) -> Tuple[int, int]:
             keep &= x > 0
         if spec.log_y:
             keep &= y > 0
-        ax.scatter(x[keep], y[keep], s=18,
-                   color=BASE_COLOR if spec.palette == "single" else SCATTER_COLOR, alpha=0.8)
+        sc = ax.scatter(x[keep], y[keep], s=18,
+                        color=BASE_COLOR if spec.palette == "single" else SCATTER_COLOR, alpha=0.85)
+        _mark_scatter_rows(ax, sc, sub[keep], spec)
         if spec.log_x:
             ax.set_xscale("log")
         if spec.log_y:
             ax.set_yscale("log")
         ax.tick_params(labelsize=7)
-        ax.grid(True, alpha=0.25)
+        ax.grid(True)
         return (int(keep.sum()), int(keep.sum()), int((~keep).sum()))

@@ -8,8 +8,11 @@ basicity, NBO/T, GlassNet ML property prediction), and combine any of the
 resulting plots into one labeled multi-panel figure for a report or slide
 deck.
 
-The app is PySide6/Qt-based: one main window with a left navigation rail of
-workspaces. It is a from-scratch rewrite of an earlier Tkinter prototype
+The app is PySide6/Qt-based: one main window with a header (dataset
+summary, global search, help, light/dark theme), a grouped navigation
+sidebar of workspaces, and a scope strip that filters every scope-aware
+workspace by farm, waste phase, waste type and tank system at once. It is a
+from-scratch rewrite of an earlier Tkinter prototype
 (`hanford_tank_gui_app.py`); that prototype's full history remains archived
 alongside this repo for reference, not in this git history.
 
@@ -22,23 +25,58 @@ citation) and the exact data provenance.
 
 | Workspace | What it does |
 |---|---|
-| **Overview** | Dataset audit: units, top elements/analytes, waste-phase/type/farm breakdowns, missing values, debug-bundle export. |
+| **Overview** | Site overview: headline figures, an interactive tank-farm map (each tank a disc, coloured by a chosen quantity, click to select, double-click to open), a linked ranking, and the dataset audit tables (units, top elements/analytes, waste-phase/type/farm breakdowns, missing values). |
+| **Query** | One flexible question over the query engine: any element, analyte or basket × any basis (kg, Ci, bridged grams, wt%, g/L) × any grouping, with guided questions that fill the controls and run. |
 | **Element Explorer** | Search by element symbol, analyte (exact/contains/regex); co-elements/co-analytes present alongside a target, composition stats, 7 plot types. |
 | **Tank Attributes** | Browse joined tank engineering metadata (type, capacity, integrity, status). |
 | **Tank Explorer** | Multi-tank composition profiles, fraction-of-tank-total, raw-row drill-down. |
 | **Heatmaps** | Tank×element inventory matrices (log/raw/fraction modes). |
-| **Correlations** | Quick Scan (target/dual/triple/full-matrix correlation, partial-correlation tank-size control), Association Workbench (kg-only Jaccard co-presence + preferred-association scoring, 18 plot types incl. publication-style tank inventory bar charts), Structure (PCA/clustering, partial correlation, network graph, interactive Plotly export). |
-| **Vitrification** | Screening (adjustable-weight glass-formulation heuristic), Oxide Chemistry (element→oxide stoichiometric conversion, optical basicity, NBO/T, composition envelope checking, optional GlassNet ML property prediction), Candidate Search, Blend Partners. |
+| **Correlations** | Cross-correlation (engine-backed: which components occur together on a concentration basis such as mol/mol Na, with species and Ci-only nuclides beside elements, each distinct composition counted once, global scope honored), Quick Scan (target/dual/triple/full-matrix correlation, partial-correlation tank-size control), Association Workbench (kg-only Jaccard co-presence + preferred-association scoring, 18 plot types incl. publication-style tank inventory bar charts), Structure (PCA/clustering, partial correlation, network graph, interactive Plotly export). |
+| **Vitrification** | Screening (adjustable-weight glass-formulation heuristic), Oxide Chemistry (element→oxide stoichiometric conversion, optical basicity, NBO/T, composition envelope checking, optional GlassNet ML property prediction), Candidate Search, Blend Partners, Loading rules (published LAW glass loading rules of PNNL-22631 Rev. 1 applied to each tank's salt waste: binding rule, sodium loading, glass mass, tank by tank and blended). |
 | **Figure Composer** | Combine any plots captured from any workspace into one multi-panel publication figure, with automatic panel labels (A, B, C, ...) and exact-size/DPI export. |
 
-Every workspace's rarely-needed controls (thresholds, score weights,
-per-plot-type tuning) are tucked behind an "Advanced options" toggle so the
-default view stays short; a `?` button on each workspace opens that
-workspace's own section of `NOTICE.md`. **Help → Getting Started…**
-re-opens the first-launch "what are you trying to do?" picker at any time,
-and **Help → Debug / Export…** holds the live log viewer and one-click
-debug-bundle export (a troubleshooting utility, not a workspace, so it
-isn't in the nav rail).
+Across workspaces:
+
+- **Charts answer to the pointer.** Hovering a bar, a point or a heat-map
+  cell names it and gives its value with unit; a click selects the matching
+  table row where there is one; a double click on anything that stands for
+  a tank opens that tank in the Tank Explorer. Each chart can be exported
+  (PNG, SVG, PDF) or sent to the Figure Composer from its own toolbar.
+- **Tables** have a filter box, readable headers, formatted numbers, sorting
+  by value, and a context menu to copy cells or export CSV.
+- **Search** (Ctrl+K) finds tanks, elements, analytes and workspaces.
+- **Notes that qualify a result** (what was set aside, converted or left
+  out, and why) appear as one line above it, with the full list one click
+  away and in the workspace's Notes tab and exports.
+- Rarely-needed controls (thresholds, score weights, per-plot-type tuning)
+  sit behind an "Advanced options" toggle; a `?` button on each workspace
+  opens that workspace's own section of `NOTICE.md`.
+- **Help → Getting Started…** re-opens the first-launch picker at any time.
+  Data loading options (local CSVs, parquet cache) are in the **Data** menu;
+  **Help → Debug / Export…** holds the live log viewer and the debug-bundle
+  export.
+
+## Version 2.0
+
+Version 2.0 is a rebuild on four layers, with the science modules and
+their tests carried over:
+
+- **A query engine** (`query_engine.py`): one question surface for any
+  element, analyte or basket, on any basis, with stoichiometric
+  apportionment of species to elements, activity-to-mass conversion, and
+  every exclusion or conversion stated with the result.
+- **A plot grammar** (`plot_grammar.py`) and one chart style; charts answer
+  to hover, click and double click.
+- **Engine-backed workspaces**: Query, Element Explorer, Heatmaps, the Site
+  overview with its tank-farm map, the tank profile, Cross-correlation on a
+  concentration basis, and published glass loading rules.
+- **Provenance**: exports carry the dataset fingerprint, the question, the
+  scope and a methods paragraph; `.ember` project files save baskets,
+  questions and scope.
+
+The interface was redesigned in the same release: header with search,
+grouped sidebar, scope strip, one page layout for every workspace, light
+and dark themes.
 
 ## Installation
 

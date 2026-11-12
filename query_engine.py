@@ -552,6 +552,49 @@ def _mass_restatement_warnings(contrib: pl.DataFrame) -> List[str]:
     return out
 
 
+def _mixed_representation_warning(included: pl.DataFrame) -> List[str]:
+    """One sentence naming members that are a reported mass in some layers
+    and only a bridged radionuclide in others.
+
+    The per-layer restatement rule is right for a TOTAL -- a layer giving
+    only activity still contributes its nuclide -- but it puts two
+    different quantities on one axis. Elemental selenium is reported in
+    60 tanks at hundreds to thousands of times the 79Se-implied mass of
+    the other 117, so a ranking, a heatmap or a correlation of "Se"
+    compares a total with a lower bound and mostly shows which tanks were
+    analysed for the element. The numbers are as published; the reader
+    has to be told they are not one quantity."""
+    layer = [c for c in _LAYER_KEYS if c in included.columns]
+    if included.is_empty() or not layer or "Member" not in included.columns:
+        return []
+    per_layer = (
+        included.filter(pl.col("Mass_g") > 0)
+        .group_by(["Member"] + layer)
+        .agg((pl.col("Units") != "Ci").any().alias("_reported"))
+    )
+    mixed = (
+        per_layer.group_by("Member").agg([
+            pl.col("_reported").sum().alias("_n_mass"),
+            (~pl.col("_reported")).sum().alias("_n_nuclide"),
+        ])
+        .filter((pl.col("_n_mass") > 0) & (pl.col("_n_nuclide") > 0))
+        .sort("Member")
+    )
+    if mixed.is_empty():
+        return []
+    parts = [
+        f"{r['Member']} ({r['_n_mass']} layer(s) with a reported mass, {r['_n_nuclide']} nuclide-only)"
+        for r in mixed.head(6).iter_rows(named=True)
+    ]
+    more = f" and {mixed.height - 6} more" if mixed.height > 6 else ""
+    return [
+        f"Not one quantity across layers: {'; '.join(parts)}{more}. Where a layer reports only "
+        f"the radionuclide, its bridged mass is a lower bound on the element, so values are "
+        f"not comparable between the two kinds of layer — query the nuclide itself to compare "
+        f"like with like."
+    ]
+
+
 def _analyte_contributions(df: pl.DataFrame, analyte: str) -> pl.DataFrame:
     rows = df.filter(pl.col("Analyte") == analyte)
     if rows.is_empty():
@@ -817,6 +860,7 @@ def run_query(
         value_expr = pl.col("Mass_g")
         value_col = {"g": "Total_g", "wt%": "wt_pct", "g/L": "g_per_L"}[basis]
         warnings.extend(_mass_restatement_warnings(contrib))
+        warnings.extend(_mixed_representation_warning(included))
         dropped = contrib.filter(pl.col("Mass_g").is_null() & (pl.col("Units") == "Ci"))
         if dropped.height:
             labels = sorted(set(dropped.get_column("Analyte").to_list()))

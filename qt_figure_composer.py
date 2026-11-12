@@ -1,6 +1,6 @@
 """
 qt_figure_composer.py — the Figure Composer workspace: a gallery of plot
-"recipes" captured (via each PlotWidget's "-> Figure Composer" toolbar
+"recipes" captured (via each PlotWidget's "Send to Figure Composer" toolbar
 button, anywhere in Ember) into composer_store.store, arranged into a
 labeled multi-panel grid and exported at a chosen physical size/DPI.
 
@@ -9,8 +9,8 @@ figure_composer.py), not a frozen snapshot, so title, axis labels, and any
 of the recipe's own keyword parameters (color mode, annotate, top-N, ...)
 stay editable right up to export.
 
-Layout pattern borrowed from qt_vitrification_oxide.py (left-controls/
-right-preview QSplitter). The actual grid compositing is
+Layout: a page header, then the panel list and its controls on the left
+and the live preview on the right. The actual grid compositing is
 figure_composer.compose_figure(); the pure layout/label math it calls is
 in compose_science.py.
 """
@@ -23,17 +23,32 @@ from typing import Any, Dict, Optional
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
-    QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QScrollArea, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 import compose_science as csci
 import figure_composer as fcomp
 from composer_store import TEXT_OVERRIDE_FIELDS, store
 from data_model import HanfordDataset
+from qt_components import PageHeader, secondary_button
 from qt_help import make_help_button
 from qt_widgets import CollapsibleSection, PlotWidget
+
+PAGE_SUBTITLE = (
+    'Combine charts from anywhere in the app into one lettered, multi-panel figure. Use "Send to '
+    'Figure Composer" on the toolbar of a chart to add it; every panel stays editable until export.'
+)
+
+
+def _override_color() -> QColor:
+    """The colour of an edited parameter value: the theme's "good" tone."""
+    try:
+        import qt_theme
+        return QColor(qt_theme.current_palette().get("good", "#1a7f4b"))
+    except Exception:
+        return QColor("#1a7f4b")
 
 
 def _parse_param_text(text: str) -> Any:
@@ -81,98 +96,120 @@ class FigureComposerPage(QWidget):
         self._refresh_gallery()
 
     def _build_ui(self) -> None:
-        root = QHBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        splitter = QSplitter()
-        root.addWidget(splitter)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(12)
 
+        self.header = PageHeader("Figure Composer", PAGE_SUBTITLE)
+        self.header.add_action_widget(make_help_button(self, 13, "Figure Composer"))
+        root.addWidget(self.header)
+
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        root.addWidget(splitter, 1)
+
+        # The control column scrolls by itself: opening Advanced options
+        # must never push the preview (or the Export button) off the page.
         left = QWidget()
         left.setObjectName("Card")
-        left.setMaximumWidth(400)
+        self.controls_scroll = QScrollArea()
+        self.controls_scroll.setObjectName("ControlsScroll")
+        self.controls_scroll.setWidgetResizable(True)
+        self.controls_scroll.setFrameShape(QFrame.NoFrame)
+        self.controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.controls_scroll.setMinimumWidth(372)
+        self.controls_scroll.setMaximumWidth(440)
+        self.controls_scroll.setWidget(left)
         ll = QVBoxLayout(left)
+        ll.setContentsMargins(12, 12, 12, 12)
+        ll.setSpacing(8)
 
-        header = QHBoxLayout()
-        title = QLabel("Figure Composer")
-        title.setObjectName("SectionTitle")
-        header.addWidget(title)
-        header.addStretch(1)
-        header.addWidget(make_help_button(self, 13, "Figure Composer"))
-        ll.addLayout(header)
-        note = QLabel('Click "→ Figure Composer" on any plot\'s toolbar, anywhere in Ember, to add it here.')
-        note.setWordWrap(True)
-        note.setObjectName("SectionNote")
-        ll.addWidget(note)
+        panels_title = QLabel("Panels")
+        panels_title.setObjectName("SectionTitle")
+        ll.addWidget(panels_title)
 
         self.gallery_list = QListWidget()
         self.gallery_list.setIconSize(QSize(110, 82))
+        self.gallery_list.setToolTip("The panels of the figure, in reading order. Select one to edit its labels.")
         self.gallery_list.currentRowChanged.connect(self._on_selection_changed)
+        self.gallery_list.setMinimumHeight(150)
         ll.addWidget(self.gallery_list, 1)
 
         row_btns = QHBoxLayout()
-        up_btn = QPushButton("Move up")
-        up_btn.clicked.connect(lambda: self._move(-1))
-        row_btns.addWidget(up_btn)
-        down_btn = QPushButton("Move down")
-        down_btn.clicked.connect(lambda: self._move(1))
-        row_btns.addWidget(down_btn)
-        remove_btn = QPushButton("Remove")
-        remove_btn.clicked.connect(self._remove_selected)
-        row_btns.addWidget(remove_btn)
+        row_btns.setSpacing(6)
+        self.up_btn = QPushButton("Up")
+        self.up_btn.setToolTip("Move the selected panel one place earlier.")
+        self.up_btn.clicked.connect(lambda: self._move(-1))
+        row_btns.addWidget(self.up_btn)
+        self.down_btn = QPushButton("Down")
+        self.down_btn.setToolTip("Move the selected panel one place later.")
+        self.down_btn.clicked.connect(lambda: self._move(1))
+        row_btns.addWidget(self.down_btn)
+        self.remove_btn = QPushButton("Remove")
+        self.remove_btn.setToolTip("Take the selected panel out of the figure.")
+        self.remove_btn.clicked.connect(self._remove_selected)
+        row_btns.addWidget(self.remove_btn)
+        row_btns.addStretch(1)
+        self.clear_btn = secondary_button("Clear all", "Remove every panel (asks first).")
+        self.clear_btn.clicked.connect(self._clear_all)
+        row_btns.addWidget(self.clear_btn)
         ll.addLayout(row_btns)
-        clear_btn = QPushButton("Clear all panels")
-        clear_btn.clicked.connect(self._clear_all)
-        ll.addWidget(clear_btn)
 
         # Per-panel label editing and grid layout are refinements on top of
         # the core add/reorder/export workflow above -- collapsed by
         # default so a first-time user sees a short, obvious path.
-        self.advanced_section = CollapsibleSection("Advanced options (panel labels & layout)")
+        self.advanced_section = CollapsibleSection("Advanced options (panel labels and layout)")
         adv = self.advanced_section.content_layout()
 
-        caption_row = QHBoxLayout()
-        caption_row.addWidget(QLabel("Caption"))
+        panel_title = QLabel("Selected panel")
+        panel_title.setObjectName("FieldLabel")
+        adv.addWidget(panel_title)
+        panel_form = QFormLayout()
+        panel_form.setContentsMargins(0, 0, 0, 0)
+        panel_form.setHorizontalSpacing(8)
+        panel_form.setVerticalSpacing(6)
+
         self.caption_edit = QLineEdit()
         self.caption_edit.setEnabled(False)
+        self.caption_edit.setToolTip("The name of the panel in the list above. It is not drawn on the figure.")
         self.caption_edit.editingFinished.connect(self._apply_caption_edit)
-        caption_row.addWidget(self.caption_edit)
-        adv.addLayout(caption_row)
+        panel_form.addRow("Caption", self.caption_edit)
 
-        adv.addWidget(QLabel("Selected panel"))
         title_row = QHBoxLayout()
-        title_row.addWidget(QLabel("Title"))
         self.title_edit = QLineEdit()
         self.title_edit.setEnabled(False)
         self.title_edit.setPlaceholderText("(from plot)")
+        self.title_edit.setToolTip("Replace the panel's title. Leave empty to keep the title of the chart.")
         self.title_edit.editingFinished.connect(self._apply_title_edit)
         title_row.addWidget(self.title_edit, 1)
         self.hide_title_check = QCheckBox("Hide")
         self.hide_title_check.setEnabled(False)
+        self.hide_title_check.setToolTip("Draw this panel without a title.")
         self.hide_title_check.toggled.connect(self._apply_title_edit)
         title_row.addWidget(self.hide_title_check)
-        adv.addLayout(title_row)
+        panel_form.addRow("Title", title_row)
 
-        xlabel_row = QHBoxLayout()
-        xlabel_row.addWidget(QLabel("X axis"))
         self.xlabel_edit = QLineEdit()
         self.xlabel_edit.setEnabled(False)
         self.xlabel_edit.setPlaceholderText("(from plot)")
+        self.xlabel_edit.setToolTip("Replace the label of the horizontal axis. Leave empty to keep the chart's own.")
         self.xlabel_edit.editingFinished.connect(self._apply_xlabel_edit)
-        xlabel_row.addWidget(self.xlabel_edit)
-        adv.addLayout(xlabel_row)
+        panel_form.addRow("X axis", self.xlabel_edit)
 
-        ylabel_row = QHBoxLayout()
-        ylabel_row.addWidget(QLabel("Y axis"))
         self.ylabel_edit = QLineEdit()
         self.ylabel_edit.setEnabled(False)
         self.ylabel_edit.setPlaceholderText("(from plot)")
+        self.ylabel_edit.setToolTip("Replace the label of the vertical axis. Leave empty to keep the chart's own.")
         self.ylabel_edit.editingFinished.connect(self._apply_ylabel_edit)
-        ylabel_row.addWidget(self.ylabel_edit)
-        adv.addLayout(ylabel_row)
+        panel_form.addRow("Y axis", self.ylabel_edit)
+        adv.addLayout(panel_form)
 
         params_row = QHBoxLayout()
-        params_row.addWidget(QLabel("Parameters"))
+        params_label = QLabel("Parameters")
+        params_label.setObjectName("FieldLabel")
+        params_row.addWidget(params_label)
         params_row.addStretch(1)
-        self.reset_params_btn = QPushButton("Reset")
+        self.reset_params_btn = secondary_button("Reset", "Put every parameter of this panel back to the value it was captured with.")
         self.reset_params_btn.setEnabled(False)
         self.reset_params_btn.clicked.connect(self._reset_params)
         params_row.addWidget(self.reset_params_btn)
@@ -183,68 +220,87 @@ class FigureComposerPage(QWidget):
         self.params_table.verticalHeader().setVisible(False)
         self.params_table.setMaximumHeight(150)
         self.params_table.setEnabled(False)
+        self.params_table.setToolTip(
+            "The settings the chart was drawn with. Edit a value to redraw this panel with it;\n"
+            "edited values are highlighted.")
         self.params_table.itemChanged.connect(self._on_param_item_changed)
         adv.addWidget(self.params_table)
 
-        adv.addWidget(QLabel("Layout"))
-        cols_row = QHBoxLayout()
-        cols_row.addWidget(QLabel("Columns (0 = auto)"))
+        layout_title = QLabel("Layout")
+        layout_title.setObjectName("FieldLabel")
+        adv.addWidget(layout_title)
+        layout_form = QFormLayout()
+        layout_form.setContentsMargins(0, 0, 0, 0)
+        layout_form.setHorizontalSpacing(8)
+        layout_form.setVerticalSpacing(6)
         self.cols_spin = QSpinBox()
         self.cols_spin.setRange(0, 8)
+        self.cols_spin.setSpecialValueText("Auto")
+        self.cols_spin.setToolTip("Number of columns of the grid. Auto chooses the most compact arrangement.")
         self.cols_spin.valueChanged.connect(self._rebuild_preview)
-        cols_row.addWidget(self.cols_spin)
-        adv.addLayout(cols_row)
+        layout_form.addRow("Columns", self.cols_spin)
 
-        label_row = QHBoxLayout()
-        label_row.addWidget(QLabel("Panel labels"))
         self.label_style_combo = QComboBox()
         self.label_style_combo.addItems(csci.LABEL_STYLES)
+        self.label_style_combo.setToolTip("How panels are lettered in their corner.")
         self.label_style_combo.currentTextChanged.connect(self._rebuild_preview)
-        label_row.addWidget(self.label_style_combo)
-        adv.addLayout(label_row)
+        layout_form.addRow("Panel labels", self.label_style_combo)
 
-        fontsize_row = QHBoxLayout()
-        fontsize_row.addWidget(QLabel("Label size"))
         self.label_size_spin = QSpinBox()
         self.label_size_spin.setRange(6, 36)
         self.label_size_spin.setValue(14)
+        self.label_size_spin.setSuffix(" pt")
+        self.label_size_spin.setToolTip("Size of the panel letters.")
         self.label_size_spin.valueChanged.connect(self._rebuild_preview)
-        fontsize_row.addWidget(self.label_size_spin)
-        adv.addLayout(fontsize_row)
+        layout_form.addRow("Label size", self.label_size_spin)
+        adv.addLayout(layout_form)
 
         ll.addWidget(self.advanced_section)
 
-        ll.addWidget(QLabel("Export size (cm)"))
+        export_title = QLabel("Export")
+        export_title.setObjectName("SectionTitle")
+        ll.addWidget(export_title)
+        export_form = QFormLayout()
+        export_form.setContentsMargins(0, 0, 0, 0)
+        export_form.setHorizontalSpacing(8)
+        export_form.setVerticalSpacing(6)
         size_row = QHBoxLayout()
+        size_row.setSpacing(6)
         self.export_w_spin = QDoubleSpinBox()
         self.export_w_spin.setRange(1.0, 100.0)
         self.export_w_spin.setValue(18.0)
-        size_row.addWidget(self.export_w_spin)
-        size_row.addWidget(QLabel("x"))
+        self.export_w_spin.setSuffix(" cm")
+        self.export_w_spin.setToolTip("Width of the exported figure.")
+        size_row.addWidget(self.export_w_spin, 1)
+        size_row.addWidget(QLabel("×"))
         self.export_h_spin = QDoubleSpinBox()
         self.export_h_spin.setRange(1.0, 100.0)
         self.export_h_spin.setValue(12.0)
-        size_row.addWidget(self.export_h_spin)
-        ll.addLayout(size_row)
+        self.export_h_spin.setSuffix(" cm")
+        self.export_h_spin.setToolTip("Height of the exported figure.")
+        size_row.addWidget(self.export_h_spin, 1)
+        export_form.addRow("Size", size_row)
 
-        dpi_row = QHBoxLayout()
-        dpi_row.addWidget(QLabel("Export DPI"))
         self.dpi_spin = QSpinBox()
         self.dpi_spin.setRange(72, 1200)
         self.dpi_spin.setValue(300)
-        dpi_row.addWidget(self.dpi_spin)
-        ll.addLayout(dpi_row)
+        self.dpi_spin.setSuffix(" dpi")
+        self.dpi_spin.setToolTip("Resolution of a PNG or TIFF export. PDF and SVG are vector formats.")
+        export_form.addRow("Resolution", self.dpi_spin)
+        ll.addLayout(export_form)
 
-        export_btn = QPushButton("Export figure…")
-        export_btn.setObjectName("Primary")
-        export_btn.clicked.connect(self.export_figure)
-        ll.addWidget(export_btn)
-        splitter.addWidget(left)
+        self.export_btn = QPushButton("Export figure...")
+        self.export_btn.setObjectName("Primary")
+        self.export_btn.setToolTip("Save the figure as PNG, PDF, SVG or TIFF at the size above.")
+        self.export_btn.clicked.connect(self.export_figure)
+        ll.addWidget(self.export_btn)
+        splitter.addWidget(self.controls_scroll)
 
         self.plot = PlotWidget()
         splitter.addWidget(self.plot)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([384, 740])
 
     # ------------------------------------------------------------------
     def on_dataset_changed(self, dataset: HanfordDataset) -> None:
@@ -412,8 +468,13 @@ class FigureComposerPage(QWidget):
         items = store.items()
         selected = 0 <= row < len(items)
         for widget in (self.caption_edit, self.title_edit, self.hide_title_check,
-                       self.xlabel_edit, self.ylabel_edit, self.params_table, self.reset_params_btn):
+                       self.xlabel_edit, self.ylabel_edit, self.params_table, self.reset_params_btn,
+                       self.remove_btn):
             widget.setEnabled(selected)
+        self.up_btn.setEnabled(selected and row > 0)
+        self.down_btn.setEnabled(selected and row < len(items) - 1)
+        self.clear_btn.setEnabled(bool(items))
+        self.export_btn.setEnabled(bool(items))
         if not selected:
             self.caption_edit.clear()
             self.title_edit.clear()
@@ -446,7 +507,7 @@ class FigureComposerPage(QWidget):
             self.params_table.setItem(row, 0, name_item)
             value_item = QTableWidgetItem(str(kwargs[key]))
             if key in item.kwarg_overrides:
-                value_item.setForeground(QColor("darkgreen"))
+                value_item.setForeground(_override_color())
             self.params_table.setItem(row, 1, value_item)
         self.params_table.blockSignals(False)
 
@@ -531,9 +592,14 @@ class FigureComposerPage(QWidget):
             label_fontsize=self.label_size_spin.value(),
         )
 
+    def _say(self, message: str) -> None:
+        bar = getattr(self.app_window, "statusBar", None)
+        if callable(bar):
+            bar().showMessage(message)
+
     def export_figure(self) -> None:
         if not store.items():
-            QMessageBox.information(self, "Export", "Add at least one panel first (see the note above the gallery).")
+            self._say('Figure Composer: nothing to export yet. Use "Send to Figure Composer" on a chart first.')
             return
         from PySide6.QtCore import QSettings
         from qt_help import APP_NAME
@@ -546,4 +612,5 @@ class FigureComposerPage(QWidget):
             return
         settings.setValue("composer_last_export_dir", str(Path(path).resolve().parent))
         self.plot.export_at_size_cm(path, self.export_w_spin.value(), self.export_h_spin.value(), dpi=self.dpi_spin.value())
+        self._say(f"Figure exported: {path}")
         QMessageBox.information(self, "Export complete", f"Saved {path}")
